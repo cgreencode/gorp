@@ -259,7 +259,7 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 
 		s := bytes.Buffer{}
 		s2 := bytes.Buffer{}
-		s.WriteString(fmt.Sprintf("insert into %s (", t.dbmap.Dialect.QuoteField(t.TableName)))
+		s.WriteString(fmt.Sprintf("insert into %s (", t.TableName))
 
 		x := 0
 		first := true
@@ -311,7 +311,9 @@ func (t *TableMap) bindUpdate(elem reflect.Value) (bindInstance, error) {
 	if plan.query == "" {
 
 		s := bytes.Buffer{}
-		s.WriteString(fmt.Sprintf("update %s set ", t.dbmap.Dialect.QuoteField(t.TableName)))
+		s.WriteString("update ")
+		s.WriteString(t.TableName)
+		s.WriteString(" set ")
 		x := 0
 
 		for y := range t.columns {
@@ -369,7 +371,8 @@ func (t *TableMap) bindDelete(elem reflect.Value) (bindInstance, error) {
 	if plan.query == "" {
 
 		s := bytes.Buffer{}
-		s.WriteString(fmt.Sprintf("delete from %s", t.dbmap.Dialect.QuoteField(t.TableName)))
+		s.WriteString("delete from ")
+		s.WriteString(t.TableName)
 
 		for y := range t.columns {
 			col := t.columns[y]
@@ -624,7 +627,7 @@ func (m *DbMap) CreateTables() error {
 		table := m.tables[i]
 
 		s := bytes.Buffer{}
-		s.WriteString(fmt.Sprintf("create table %s (", m.Dialect.QuoteField(table.TableName)))
+		s.WriteString(fmt.Sprintf("create table %s (", table.TableName))
 		x := 0
 		for _, col := range table.columns {
 			if !col.Transient {
@@ -677,7 +680,7 @@ func (m *DbMap) DropTables() error {
 	var err error
 	for i := range m.tables {
 		table := m.tables[i]
-		_, e := m.Exec(fmt.Sprintf("drop table %s;", m.Dialect.QuoteField(table.TableName)))
+		_, e := m.Exec(fmt.Sprintf("drop table %s;", table.TableName))
 		if e != nil {
 			err = e
 		}
