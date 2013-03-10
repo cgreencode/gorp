@@ -136,7 +136,7 @@ func (d PostgresDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr boo
 		return "integer"
 	case reflect.Int64:
 		if isAutoIncr {
-			return "bigserial"
+			return "serial"
 		}
 		return "bigint"
 	case reflect.Float64, reflect.Float32:
