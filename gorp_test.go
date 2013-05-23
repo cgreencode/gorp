@@ -57,12 +57,27 @@ type WithIgnoredColumn struct {
 	Created  int64
 }
 
+type WithStringPk struct {
+	Id   string
+	Desc string
+}
+
 type CustomStringType string
 
 type TypeConversionExample struct {
 	Id         int64
 	PersonJSON Person
 	Name       CustomStringType
+}
+
+type WithEmbeddedStruct struct {
+	Id int64
+	Names
+}
+
+type Names struct {
+	FirstName string
+	LastName  string
 }
 
 type testTypeConverter struct{}
@@ -159,13 +174,23 @@ type PersistentUser struct {
 	PassedTraining bool
 }
 
+func TestCreateTablesIfNotExists(t *testing.T) {
+	dbmap := initDbMap()
+	defer dbmap.DropTables()
+
+	err := dbmap.CreateTablesIfNotExists()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestPersistentUser(t *testing.T) {
 	dbmap := newDbMap()
 	dbmap.Exec("drop table if exists PersistentUser")
 	dbmap.TraceOn("", log.New(os.Stdout, "gorptest: ", log.Lmicroseconds))
 	table := dbmap.AddTable(PersistentUser{}).SetKeys(false, "Key")
 	table.ColMap("Key").Rename("mykey")
-	err := dbmap.CreateTables()
+	err := dbmap.CreateTablesIfNotExists()
 	if err != nil {
 		panic(err)
 	}
@@ -191,19 +216,6 @@ func TestPersistentUser(t *testing.T) {
 	}
 	if !reflect.DeepEqual(pu, arr[0]) {
 		t.Errorf("%v!=%v", pu, arr[0])
-	}
-
-	// prove we can get the results back in a slice
-	var puArr []*PersistentUser
-	_, err = dbmap.Select(&puArr, "select * from PersistentUser")
-	if err != nil {
-		panic(err)
-	}
-	if len(puArr) != 1 {
-		t.Errorf("Expected one persistentuser, found none")
-	}
-	if !reflect.DeepEqual(pu, puArr[0]) {
-		t.Errorf("%v!=%v", pu, puArr[0])
 	}
 }
 
@@ -410,13 +422,6 @@ func TestHooks(t *testing.T) {
 		t.Errorf("p1.PostUpdate() didn't run: %v", p1)
 	}
 
-	var persons []*Person
-	bindVar := dbmap.Dialect.BindVar(0)
-	rawselect(dbmap, &persons, "select * from person_test where id = "+bindVar, p1.Id)
-	if persons[0].LName != "postget" {
-		t.Errorf("p1.PostGet() didn't run after select: %v", p1)
-	}
-
 	del(dbmap, p1)
 	if p1.FName != "predelete" {
 		t.Errorf("p1.PreDelete() didn't run: %v", p1)
@@ -582,6 +587,32 @@ func TestTypeConversionExample(t *testing.T) {
 
 }
 
+func TestWithEmbeddedStruct(t *testing.T) {
+	dbmap := initDbMap()
+	defer dbmap.DropTables()
+
+	es := &WithEmbeddedStruct{-1, Names{FirstName: "Alice", LastName: "Smith"}}
+	insert(dbmap, es)
+	expected := &WithEmbeddedStruct{1, Names{FirstName: "Alice", LastName: "Smith"}}
+	es2 := get(dbmap, WithEmbeddedStruct{}, es.Id).(*WithEmbeddedStruct)
+	if !reflect.DeepEqual(expected, es2) {
+		t.Errorf("%v != %v", expected, es2)
+	}
+
+	es2.FirstName = "Bob"
+	expected.FirstName = "Bob"
+	update(dbmap, es2)
+	es2 = get(dbmap, WithEmbeddedStruct{}, es.Id).(*WithEmbeddedStruct)
+	if !reflect.DeepEqual(expected, es2) {
+		t.Errorf("%v != %v", expected, es2)
+	}
+
+	ess := rawselect(dbmap, WithEmbeddedStruct{}, "select * from embedded_struct_test")
+	if !reflect.DeepEqual(es2, ess[0]) {
+		t.Errorf("%v != %v", es2, ess[0])
+	}
+}
+
 func TestSelectVal(t *testing.T) {
 	dbmap := initDbMapNulls()
 	defer dbmap.DropTables()
@@ -640,6 +671,37 @@ func TestSelectVal(t *testing.T) {
 		t.Errorf("nullstr no rows %v != '',false", ns)
 	}
 }
+
+func TestVersionMultipleRows(t *testing.T) {
+	dbmap := initDbMap()
+	defer dbmap.DropTables()
+
+	persons := []*Person{
+		&Person{0, 0, 0, "Bob", "Smith", 0},
+		&Person{0, 0, 0, "Jane", "Smith", 0},
+		&Person{0, 0, 0, "Mike", "Smith", 0},
+	}
+
+	insert(dbmap, persons[0], persons[1], persons[2])
+
+	for x, p := range persons {
+		if p.Version != 1 {
+			t.Errorf("person[%d].Version != 1: %d", x, p.Version)
+		}
+	}
+}
+
+/*
+func TestWithStringPk(t *testing.T) {
+	dbmap := initDbMap()
+	defer dbmap.DropTables()
+
+	row := &WithStringPk{"myid", "foo"}
+	err := dbmap.Insert(row)
+	if err == nil {
+		t.Errorf("Expected error when inserting into table w/non Int PK and autoincr set true")
+	}
+}*/
 
 func BenchmarkNativeCrud(b *testing.B) {
 	b.StopTimer()
@@ -750,7 +812,9 @@ func initDbMap() *DbMap {
 	dbmap.AddTableWithName(Invoice{}, "invoice_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(Person{}, "person_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithIgnoredColumn{}, "ignored_column_test").SetKeys(true, "Id")
+	dbmap.AddTableWithName(WithStringPk{}, "string_pk_test").SetKeys(false, "Id")
 	dbmap.AddTableWithName(TypeConversionExample{}, "type_conv_test").SetKeys(true, "Id")
+	dbmap.AddTableWithName(WithEmbeddedStruct{}, "embedded_struct_test").SetKeys(true, "Id")
 	dbmap.TypeConverter = testTypeConverter{}
 	err := dbmap.CreateTables()
 	if err != nil {
