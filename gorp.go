@@ -64,8 +64,8 @@ type TypeConverter interface {
 	ToDb(val interface{}) (interface{}, error)
 
 	// FromDb returns a CustomScanner appropriate for this type. This will be used
-	// to hold values returned from SELECT queries.  
-	// 
+	// to hold values returned from SELECT queries.
+	//
 	// In particular the CustomScanner returned should implement a Binder
 	// function appropriate for the Go type you wish to convert the db value to
 	//
@@ -88,7 +88,7 @@ type CustomScanner struct {
 	Binder func(holder interface{}, target interface{}) error
 }
 
-// Bind is called automatically by gorp after Scan() 
+// Bind is called automatically by gorp after Scan()
 func (me CustomScanner) Bind() error {
 	return me.Binder(me.Holder, me.Target)
 }
@@ -590,41 +590,30 @@ func (m *DbMap) AddTableWithName(i interface{}, name string) *TableMap {
 	}
 
 	tmap := &TableMap{gotype: t, TableName: name, dbmap: m}
-	tmap.columns, tmap.version = readStructColumns(t)
+
+	n := t.NumField()
+	tmap.columns = make([]*ColumnMap, 0, n)
+	for i := 0; i < n; i++ {
+		f := t.Field(i)
+		columnName := f.Tag.Get("db")
+		if columnName == "" {
+			columnName = f.Name
+		}
+
+		cm := &ColumnMap{
+			ColumnName: columnName,
+			Transient:  columnName == "-",
+			fieldName:  f.Name,
+			gotype:     f.Type,
+		}
+		tmap.columns = append(tmap.columns, cm)
+		if cm.fieldName == "Version" {
+			tmap.version = tmap.columns[len(tmap.columns)-1]
+		}
+	}
 	m.tables = append(m.tables, tmap)
 
 	return tmap
-}
-
-func readStructColumns(t reflect.Type) (cols []*ColumnMap, version *ColumnMap) {
-	n := t.NumField()
-	for i := 0; i < n; i++ {
-		f := t.Field(i)
-		if f.Anonymous && f.Type.Kind() == reflect.Struct {
-			// Recursively add nested fields in embedded structs.
-			subcols, subversion := readStructColumns(f.Type)
-			cols = append(cols, subcols...)
-			if subversion != nil {
-				version = subversion
-			}
-		} else {
-			columnName := f.Tag.Get("db")
-			if columnName == "" {
-				columnName = f.Name
-			}
-			cm := &ColumnMap{
-				ColumnName: columnName,
-				Transient:  columnName == "-",
-				fieldName:  f.Name,
-				gotype:     f.Type,
-			}
-			cols = append(cols, cm)
-			if cm.fieldName == "Version" {
-				version = cm
-			}
-		}
-	}
-	return
 }
 
 // CreateTables iterates through TableMaps registered to this DbMap and
@@ -787,7 +776,11 @@ func (m *DbMap) Get(i interface{}, keys ...interface{}) (interface{}, error) {
 // Hook function PostGet() will be executed
 // after the SELECT statement if the interface defines them.
 //
-// Returns a slice of pointers to matching rows of type i.
+// Values are returned in one of two ways:
+// 1. If i is a struct or a pointer to a struct, returns a slice of pointers to
+//    matching rows of type i.
+// 2. If i is a pointer to a slice, the results will be appended to that slice
+//    and nil returned.
 //
 // i does NOT need to be registered with AddTable()
 func (m *DbMap) Select(i interface{}, query string, args ...interface{}) ([]interface{}, error) {
@@ -1047,23 +1040,41 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		return nil, err
 	}
 
-	for _, v := range list {
-		err = runHook("PostGet", reflect.ValueOf(v), hookArg(exec))
-		if err != nil {
-			return nil, err
+	// Determine where the results are: written to i, or returned in list
+	if t, _ := toSliceType(i); t == nil {
+		for _, v := range list {
+			err = runHook("PostGet", reflect.ValueOf(v), hookArg(exec))
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		resultsValue := reflect.Indirect(reflect.ValueOf(i))
+		for i := 0; i < resultsValue.Len(); i++ {
+			err = runHook("PostGet", resultsValue.Index(i), hookArg(exec))
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
-
 	return list, nil
 }
 
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
+	appendToSlice := false // Write results to i directly?
 
-	// get type for i, verifying it's a struct
+	// get type for i, verifying it's a struct or a pointer-to-slice
 	t, err := toType(i)
 	if err != nil {
-		return nil, err
+		var err2 error
+		if t, err2 = toSliceType(i); t == nil {
+			if err2 != nil {
+				return nil, err2
+			}
+			return nil, err
+		}
+		appendToSlice = true
 	}
 
 	// Run the query
@@ -1087,20 +1098,22 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		tableMapped = true
 	}
 
-	colToFieldIndex := make([][]int, len(cols))
+	colToFieldOffset := make([]int, len(cols))
+
+	numField := t.NumField()
 
 	// Loop over column names and find field in i to bind to
 	// based on column name. all returned columns must match
 	// a field in the i struct
 	for x := range cols {
+		colToFieldOffset[x] = -1
 		colName := strings.ToLower(cols[x])
-
-		field, found := t.FieldByNameFunc(func(fieldName string) bool {
-			field, _ := t.FieldByName(fieldName)
-			fieldName = field.Tag.Get("db")
+		for y := 0; y < numField; y++ {
+			field := t.Field(y)
+			fieldName := field.Tag.Get("db")
 
 			if fieldName == "-" {
-				return false
+				continue
 			} else if fieldName == "" {
 				fieldName = field.Name
 			}
@@ -1110,13 +1123,14 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 					fieldName = colMap.ColumnName
 				}
 			}
+			fieldName = strings.ToLower(fieldName)
 
-			return colName == strings.ToLower(fieldName)
-		})
-		if found {
-			colToFieldIndex[x] = field.Index
+			if fieldName == colName {
+				colToFieldOffset[x] = y
+				break
+			}
 		}
-		if colToFieldIndex[x] == nil {
+		if colToFieldOffset[x] == -1 {
 			e := fmt.Sprintf("gorp: No field %s in type %s (query: %s)",
 				colName, t.Name(), query)
 			return nil, errors.New(e)
@@ -1125,7 +1139,11 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 
 	conv := m.TypeConverter
 
-	list := make([]interface{}, 0)
+	// Add results to one of these two slices.
+	var (
+		list       = make([]interface{}, 0)
+		sliceValue = reflect.Indirect(reflect.ValueOf(i))
+	)
 
 	for {
 		if !rows.Next() {
@@ -1142,7 +1160,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		custScan := make([]CustomScanner, 0)
 
 		for x := range cols {
-			f := v.Elem().FieldByIndex(colToFieldIndex[x])
+			f := v.Elem().Field(colToFieldOffset[x])
 			target := f.Addr().Interface()
 			if conv != nil {
 				scanner, ok := conv.FromDb(target)
@@ -1166,7 +1184,15 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			}
 		}
 
-		list = append(list, v.Interface())
+		if appendToSlice {
+			sliceValue.Set(reflect.Append(sliceValue, v))
+		} else {
+			list = append(list, v.Interface())
+		}
+	}
+
+	if appendToSlice && sliceValue.IsNil() {
+		sliceValue.Set(reflect.MakeSlice(sliceValue.Type(), 0, 0))
 	}
 
 	return list, nil
@@ -1194,6 +1220,30 @@ func fieldByName(val reflect.Value, fieldName string) *reflect.Value {
 	}
 
 	return nil
+}
+
+// toSliceType returns the element type of the given object, if the object is a
+// "*[]*Element". If not, returns nil.
+// err is returned if the user was trying to pass a pointer-to-slice but failed.
+func toSliceType(i interface{}) (reflect.Type, error) {
+	t := reflect.TypeOf(i)
+	if t.Kind() != reflect.Ptr {
+		// If it's a slice, return a more helpful error message
+		if t.Kind() == reflect.Slice {
+			return nil, fmt.Errorf("gorp: Cannot SELECT into a non-pointer slice: %v", t)
+		}
+		return nil, nil
+	}
+	if t = t.Elem(); t.Kind() != reflect.Slice {
+		return nil, nil
+	}
+	if t = t.Elem(); t.Kind() != reflect.Ptr {
+		return nil, nil
+	}
+	if t = t.Elem(); t.Kind() != reflect.Struct {
+		return nil, nil
+	}
+	return t, nil
 }
 
 func toType(i interface{}) (reflect.Type, error) {
@@ -1386,7 +1436,13 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 			if err != nil {
 				return err
 			}
-			elem.Field(bi.autoIncrIdx).SetInt(id)
+			f := elem.Field(bi.autoIncrIdx)
+			k := f.Kind()
+			if (k == reflect.Int) || (k == reflect.Int16) || (k == reflect.Int32) || (k == reflect.Int64) {
+				f.SetInt(id)
+			} else {
+				return errors.New(fmt.Sprintf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d", bi.query, bi.autoIncrIdx))
+			}
 		} else {
 			_, err := exec.Exec(bi.query, bi.args...)
 			if err != nil {
