@@ -920,6 +920,7 @@ func (t *Transaction) Exec(query string, args ...interface{}) (sql.Result, error
 	if err != nil {
 		return nil, err
 	}
+	defer stmt.Close()
 	return stmt.Exec(args...)
 }
 
@@ -1041,7 +1042,7 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	}
 
 	// Determine where the results are: written to i, or returned in list
-	if t, _ := toSliceType(i); t == nil {
+	if t := toSliceType(i); t == nil {
 		for _, v := range list {
 			err = runHook("PostGet", reflect.ValueOf(v), hookArg(exec))
 			if err != nil {
@@ -1067,11 +1068,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	// get type for i, verifying it's a struct or a pointer-to-slice
 	t, err := toType(i)
 	if err != nil {
-		var err2 error
-		if t, err2 = toSliceType(i); t == nil {
-			if err2 != nil {
-				return nil, err2
-			}
+		if t = toSliceType(i); t == nil {
 			return nil, err
 		}
 		appendToSlice = true
@@ -1224,26 +1221,21 @@ func fieldByName(val reflect.Value, fieldName string) *reflect.Value {
 
 // toSliceType returns the element type of the given object, if the object is a
 // "*[]*Element". If not, returns nil.
-// err is returned if the user was trying to pass a pointer-to-slice but failed.
-func toSliceType(i interface{}) (reflect.Type, error) {
+func toSliceType(i interface{}) reflect.Type {
 	t := reflect.TypeOf(i)
 	if t.Kind() != reflect.Ptr {
-		// If it's a slice, return a more helpful error message
-		if t.Kind() == reflect.Slice {
-			return nil, fmt.Errorf("gorp: Cannot SELECT into a non-pointer slice: %v", t)
-		}
-		return nil, nil
+		return nil
 	}
 	if t = t.Elem(); t.Kind() != reflect.Slice {
-		return nil, nil
+		return nil
 	}
 	if t = t.Elem(); t.Kind() != reflect.Ptr {
-		return nil, nil
+		return nil
 	}
 	if t = t.Elem(); t.Kind() != reflect.Struct {
-		return nil, nil
+		return nil
 	}
-	return t, nil
+	return t
 }
 
 func toType(i interface{}) (reflect.Type, error) {
