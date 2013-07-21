@@ -29,9 +29,6 @@ type Dialect interface {
 	// table attributes
 	CreateTableSuffix() string
 
-	// string to truncate tables
-	TruncateClause() string
-
 	InsertAutoIncr(exec SqlExecutor, insertSql string, params ...interface{}) (int64, error)
 
 	// bind variable string to use when forming SQL statements
@@ -111,13 +108,6 @@ func (d SqliteDialect) CreateTableSuffix() string {
 	return d.suffix
 }
 
-// With sqlite, there technically isn't a TRUNCATE statement,
-// but a DELETE FROM uses a truncate optimization:
-// http://www.sqlite.org/lang_delete.html
-func (d SqliteDialect) TruncateClause() string {
-	return "delete from"
-}
-
 // Returns "?"
 func (d SqliteDialect) BindVar(i int) string {
 	return "?"
@@ -194,10 +184,6 @@ func (d PostgresDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 // Returns suffix
 func (d PostgresDialect) CreateTableSuffix() string {
 	return d.suffix
-}
-
-func (d PostgresDialect) TruncateClause() string {
-	return "truncate"
 }
 
 // Returns "$(i+1)"
@@ -288,10 +274,6 @@ func (m MySQLDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 // Returns engine=%s charset=%s  based on values stored on struct
 func (m MySQLDialect) CreateTableSuffix() string {
 	return fmt.Sprintf(" engine=%s charset=%s", m.Engine, m.Encoding)
-}
-
-func (m MySQLDialect) TruncateClause() string {
-	return "truncate"
 }
 
 // Returns "?"
