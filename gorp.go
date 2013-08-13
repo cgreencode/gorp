@@ -504,8 +504,8 @@ func (c *ColumnMap) SetTransient(b bool) *ColumnMap {
 	return c
 }
 
-// SetUnique adds "unique" to the create table statements for this
-// column, if b is true.
+// If true " unique" will be added to create table statements for this
+// column
 func (c *ColumnMap) SetUnique(b bool) *ColumnMap {
 	c.Unique = b
 	return c
@@ -769,7 +769,7 @@ func (m *DbMap) TruncateTables() error {
 // Any interface whose TableMap has an auto-increment primary key will
 // have its last insert id bound to the PK field on the struct.
 //
-// The hook functions PreInsert() and/or PostInsert() will be executed
+// Hook functions PreInsert() and/or PostInsert() will be executed
 // before/after the INSERT statement if the interface defines them.
 //
 // Panics if any interface in the list has not been registered with AddTable
@@ -780,7 +780,7 @@ func (m *DbMap) Insert(list ...interface{}) error {
 // Update runs a SQL UPDATE statement for each element in list.  List
 // items must be pointers.
 //
-// The hook functions PreUpdate() and/or PostUpdate() will be executed
+// Hook functions PreUpdate() and/or PostUpdate() will be executed
 // before/after the UPDATE statement if the interface defines them.
 //
 // Returns number of rows updated
@@ -794,10 +794,10 @@ func (m *DbMap) Update(list ...interface{}) (int64, error) {
 // Delete runs a SQL DELETE statement for each element in list.  List
 // items must be pointers.
 //
-// The hook functions PreDelete() and/or PostDelete() will be executed
+// Hook functions PreDelete() and/or PostDelete() will be executed
 // before/after the DELETE statement if the interface defines them.
 //
-// Returns number of rows deleted.
+// Returns number of rows deleted
 //
 // Returns an error if SetKeys has not been called on the TableMap
 // Panics if any interface in the list has not been registered with AddTable
@@ -808,15 +808,15 @@ func (m *DbMap) Delete(list ...interface{}) (int64, error) {
 // Get runs a SQL SELECT to fetch a single row from the table based on the
 // primary key(s)
 //
-// i should be an empty value for the struct to load.  keys should be
-// the primary key value(s) for the row to load.  If multiple keys
-// exist on the table, the order should match the column order
-// specified in SetKeys() when the table mapping was defined.
+//  i should be an empty value for the struct to load
+//  keys should be the primary key value(s) for the row to load.  If
+//  multiple keys exist on the table, the order should match the column
+//  order specified in SetKeys() when the table mapping was defined.
 //
-// The hook function PostGet() will be executed after the SELECT
-// statement if the interface defines them.
+// Hook function PostGet() will be executed
+// after the SELECT statement if the interface defines them.
 //
-// Returns a pointer to a struct that matches or nil if no row is found.
+// Returns a pointer to a struct that matches or nil if no row is found
 //
 // Returns an error if SetKeys has not been called on the TableMap
 // Panics if any interface in the list has not been registered with AddTable
@@ -833,14 +833,14 @@ func (m *DbMap) Get(i interface{}, keys ...interface{}) (interface{}, error) {
 // do not match.  It is OK if fields on i are not part of the SQL
 // statement.
 //
-// The hook function PostGet() will be executed after the SELECT
-// statement if the interface defines them.
+// Hook function PostGet() will be executed
+// after the SELECT statement if the interface defines them.
 //
 // Values are returned in one of two ways:
 // 1. If i is a struct or a pointer to a struct, returns a slice of pointers to
-// matching rows of type i.
+//    matching rows of type i.
 // 2. If i is a pointer to a slice, the results will be appended to that slice
-// and nil returned.
+//    and nil returned.
 //
 // i does NOT need to be registered with AddTable()
 func (m *DbMap) Select(i interface{}, query string, args ...interface{}) ([]interface{}, error) {
@@ -958,32 +958,32 @@ func (m *DbMap) trace(query string, args ...interface{}) {
 
 ///////////////
 
-// Insert has the same behavior as DbMap.Insert(), but runs in a transaction.
+// Same behavior as DbMap.Insert(), but runs in a transaction
 func (t *Transaction) Insert(list ...interface{}) error {
 	return insert(t.dbmap, t, list...)
 }
 
-// Update had the same behavior as DbMap.Update(), but runs in a transaction.
+// Same behavior as DbMap.Update(), but runs in a transaction
 func (t *Transaction) Update(list ...interface{}) (int64, error) {
 	return update(t.dbmap, t, list...)
 }
 
-// Delete has the same behavior as DbMap.Delete(), but runs in a transaction.
+// Same behavior as DbMap.Delete(), but runs in a transaction
 func (t *Transaction) Delete(list ...interface{}) (int64, error) {
 	return delete(t.dbmap, t, list...)
 }
 
-// Get has the same behavior as DbMap.Get(), but runs in a transaction.
+// Same behavior as DbMap.Get(), but runs in a transaction
 func (t *Transaction) Get(i interface{}, keys ...interface{}) (interface{}, error) {
 	return get(t.dbmap, t, i, keys...)
 }
 
-// Select has the same behavior as DbMap.Select(), but runs in a transaction.
+// Same behavior as DbMap.Select(), but runs in a transaction
 func (t *Transaction) Select(i interface{}, query string, args ...interface{}) ([]interface{}, error) {
 	return hookedselect(t.dbmap, t, i, query, args...)
 }
 
-// Exec has the same behavior as DbMap.Exec(), but runs in a transaction.
+// Same behavior as DbMap.Exec(), but runs in a transaction
 func (t *Transaction) Exec(query string, args ...interface{}) (sql.Result, error) {
 	t.dbmap.trace(query, args)
 	stmt, err := t.tx.Prepare(query)
@@ -994,42 +994,42 @@ func (t *Transaction) Exec(query string, args ...interface{}) (sql.Result, error
 	return stmt.Exec(args...)
 }
 
-// SelectInt is a convenience wrapper around the gorp.SelectInt function.
+// SelectInt is a convenience wrapper around the gorp.SelectInt function
 func (t *Transaction) SelectInt(query string, args ...interface{}) (int64, error) {
 	return SelectInt(t, query, args...)
 }
 
-// SelectNullInt is a convenience wrapper around the gorp.SelectNullInt function.
+// SelectNullInt is a convenience wrapper around the gorp.SelectNullInt function
 func (t *Transaction) SelectNullInt(query string, args ...interface{}) (sql.NullInt64, error) {
 	return SelectNullInt(t, query, args...)
 }
 
-// SelectFloat is a convenience wrapper around the gorp.SelectFloat function.
+// SelectFloat is a convenience wrapper around the gorp.SelectFloat function
 func (t *Transaction) SelectFloat(query string, args ...interface{}) (float64, error) {
 	return SelectFloat(t, query, args...)
 }
 
-// SelectNullFloat is a convenience wrapper around the gorp.SelectNullFloat function.
+// SelectNullFloat is a convenience wrapper around the gorp.SelectNullFloat function
 func (t *Transaction) SelectNullFloat(query string, args ...interface{}) (sql.NullFloat64, error) {
 	return SelectNullFloat(t, query, args...)
 }
 
-// SelectStr is a convenience wrapper around the gorp.SelectStr function.
+// SelectStr is a convenience wrapper around the gorp.SelectStr function
 func (t *Transaction) SelectStr(query string, args ...interface{}) (string, error) {
 	return SelectStr(t, query, args...)
 }
 
-// SelectNullStr is a convenience wrapper around the gorp.SelectNullStr function.
+// SelectNullStr is a convenience wrapper around the gorp.SelectNullStr function
 func (t *Transaction) SelectNullStr(query string, args ...interface{}) (sql.NullString, error) {
 	return SelectNullStr(t, query, args...)
 }
 
-// Commit commits the underlying database transaction.
+// Commits the underlying database transaction
 func (t *Transaction) Commit() error {
 	return t.tx.Commit()
 }
 
-// Rollback rolls back the underlying database transaction.
+// Rolls back the underlying database transaction
 func (t *Transaction) Rollback() error {
 	return t.tx.Rollback()
 }
@@ -1106,10 +1106,9 @@ func SelectStr(e SqlExecutor, query string, args ...interface{}) (string, error)
 	return h, nil
 }
 
-// SelectNullStr executes the given query, which should be a SELECT
-// statement for a single char/varchar column, and returns the value
-// of the first row returned.  If no rows are found, the empty
-// sql.NullString is returned.
+// SelectStr executes the given query, which should be a SELECT statement for a single
+// char/varchar column, and returns the value of the first row returned.  If no rows are
+// found, the empty sql.NullString is returned.
 func SelectNullStr(e SqlExecutor, query string, args ...interface{}) (sql.NullString, error) {
 	var h sql.NullString
 	err := selectVal(e, &h, query, args...)
@@ -1358,7 +1357,7 @@ func toType(i interface{}) (reflect.Type, error) {
 	}
 
 	if t.Kind() != reflect.Struct {
-		return nil, errors.New(fmt.Sprintf("gorp: Cannot SELECT into non-struct type: %v", reflect.TypeOf(i)))
+		return nil, fmt.Errorf("gorp: Cannot SELECT into non-struct type: %v", reflect.TypeOf(i))
 	}
 	return t, nil
 }
@@ -1546,7 +1545,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 			} else if (k == reflect.Uint16) || (k == reflect.Uint32) || (k == reflect.Uint64) {
 				f.SetUint(uint64(id))
 			} else {
-				return errors.New(fmt.Sprintf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d", bi.query, bi.autoIncrIdx))
+				return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d", bi.query, bi.autoIncrIdx)
 			}
 		} else {
 			_, err := exec.Exec(bi.query, bi.args...)
