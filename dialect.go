@@ -85,8 +85,6 @@ func (d SqliteDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool)
 		return "integer"
 	case "NullableBytes":
 		return "blob"
-	case "Time":
-		return "datetime"
 	}
 
 	if maxsize < 1 {
@@ -172,8 +170,6 @@ func (d PostgresDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr boo
 		return "smallint"
 	case "NullableBytes":
 		return "bytea"
-	case "Time", "NullTime":
-		return "timestamp"
 	}
 
 	if maxsize < 1 {
@@ -268,8 +264,6 @@ func (m MySQLDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool) 
 		return "tinyint"
 	case "NullableBytes":
 		return "mediumblob"
-	case "Time":
-		return "datetime"
 	}
 
 	if maxsize < 1 {
