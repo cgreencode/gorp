@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"regexp"
 	"strings"
 )
 
@@ -1209,11 +1210,8 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
-	var (
-		appendToSlice   = false // Write results to i directly?
-		intoStruct      = true  // Selecting into a struct?
-		pointerElements = true  // Are the slice elements pointers (vs values)?
-	)
+	appendToSlice := false // Write results to i directly?
+	intoStruct := true     // Selecting into a struct?
 
 	// get type for i, verifying it's a supported destination
 	t, err := toType(i)
@@ -1225,12 +1223,26 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			}
 			return nil, err
 		}
-		pointerElements = t.Kind() == reflect.Ptr
-		if pointerElements {
-			t = t.Elem()
-		}
 		appendToSlice = true
 		intoStruct = t.Kind() == reflect.Struct
+	}
+
+	// If the caller supplied a single struct/map argument, assume a "named
+	// parameter" query.  Extract the named arguments from the struct/map, create
+	// the flat arg slice, and rewrite the query to use the dialect's placeholder.
+	if len(args) == 1 {
+		arg := reflect.ValueOf(args[0])
+		for arg.Kind() == reflect.Ptr {
+			arg = arg.Elem()
+		}
+		switch {
+		case arg.Kind() == reflect.Map && arg.Type().Key().Kind() == reflect.String:
+			query, args = expandNamedQuery(m, query, func(key string) reflect.Value {
+				return arg.MapIndex(reflect.ValueOf(key))
+			})
+		case arg.Kind() == reflect.Struct:
+			query, args = expandNamedQuery(m, query, arg.FieldByName)
+		}
 	}
 
 	// Run the query
@@ -1308,9 +1320,6 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		}
 
 		if appendToSlice {
-			if !pointerElements {
-				v = v.Elem()
-			}
 			sliceValue.Set(reflect.Append(sliceValue, v))
 		} else {
 			list = append(list, v.Interface())
@@ -1322,6 +1331,29 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	}
 
 	return list, nil
+}
+
+var keyRegexp = regexp.MustCompile(`:[[:word:]]+`)
+
+// expandNamedQuery accepts a query with placeholders of the form ":key", and a
+// single arg of Kind Struct or Map[string].  It returns the query with the
+// dialect's placeholders, and a slice of args ready for positional insertion
+// into the query.
+func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect.Value) (string, []interface{}) {
+	var (
+		n    int
+		args []interface{}
+	)
+	return keyRegexp.ReplaceAllStringFunc(query, func(key string) string {
+		val := keyGetter(key[1:])
+		if !val.IsValid() {
+			return key
+		}
+		args = append(args, val.Interface())
+		newVar := m.Dialect.BindVar(n)
+		n++
+		return newVar
+	}), args
 }
 
 func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error) {
@@ -1394,7 +1426,7 @@ func fieldByName(val reflect.Value, fieldName string) *reflect.Value {
 }
 
 // toSliceType returns the element type of the given object, if the object is a
-// "*[]*Element" or "*[]Element". If not, returns nil.
+// "*[]*Element". If not, returns nil.
 // err is returned if the user was trying to pass a pointer-to-slice but failed.
 func toSliceType(i interface{}) (reflect.Type, error) {
 	t := reflect.TypeOf(i)
@@ -1408,7 +1440,10 @@ func toSliceType(i interface{}) (reflect.Type, error) {
 	if t = t.Elem(); t.Kind() != reflect.Slice {
 		return nil, nil
 	}
-	return t.Elem(), nil
+	for t = t.Elem(); t.Kind() == reflect.Ptr; {
+		t = t.Elem()
+	}
+	return t, nil
 }
 
 func toType(i interface{}) (reflect.Type, error) {
