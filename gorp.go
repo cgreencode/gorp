@@ -125,7 +125,6 @@ type TableMap struct {
 	gotype     reflect.Type
 	columns    []*ColumnMap
 	keys       []*ColumnMap
-	indexes    []*IndexMap
 	version    *ColumnMap
 	insertPlan bindPlan
 	updatePlan bindPlan
@@ -193,40 +192,6 @@ func colMapOrNil(t *TableMap, field string) *ColumnMap {
 	return nil
 }
 
-// IdxMap returns the IndexMap pointer matching the given index name.
-func (t *TableMap) IdxMap(field string) *IndexMap {
-	for _, idx := range t.indexes {
-		if idx.IndexName == field {
-			return idx
-		}
-	}
-	return nil
-}
-
-// AddIndex registers the index with gorp for specified table with given parameters.
-// This operation is idempotent. If index is already mapped, the
-// existing *IndexMap is returned
-// Function will panic if one of the given for index columns does not exists
-
-func (t *TableMap) AddIndex(name string, idxtype string, columns []string) *IndexMap {
-	// check if we have a index with this name already
-	for _, idx := range t.indexes {
-		if idx.IndexName == name {
-			return idx
-		}
-	}
-	for _, icol := range columns {
-		if res := t.ColMap(icol); res == nil {
-			e := fmt.Sprintf("No ColumnName in table %s to create index on", t.TableName)
-			panic(e)
-		}
-	}
-
-	idx := &IndexMap{IndexName: name, Unique: false, IndexType: idxtype, columns: columns}
-	t.indexes = append(t.indexes, idx)
-	return idx
-}
-
 // SetVersionCol sets the column to use as the Version field.  By default
 // the "Version" field is used.  Returns the column found, or panics
 // if the struct does not contain a field matching this name.
@@ -240,15 +205,16 @@ func (t *TableMap) SetVersionCol(field string) *ColumnMap {
 }
 
 type bindPlan struct {
-	query       string
-	argFields   []string
-	keyFields   []string
-	versField   string
-	autoIncrIdx int
+	query             string
+	argFields         []string
+	keyFields         []string
+	versField         string
+	autoIncrIdx       int
+	autoIncrFieldName string
 }
 
 func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) (bindInstance, error) {
-	bi := bindInstance{query: plan.query, autoIncrIdx: plan.autoIncrIdx, versField: plan.versField}
+	bi := bindInstance{query: plan.query, autoIncrIdx: plan.autoIncrIdx, autoIncrFieldName: plan.autoIncrFieldName, versField: plan.versField}
 	if plan.versField != "" {
 		bi.existingVersion = elem.FieldByName(plan.versField).Int()
 	}
@@ -291,12 +257,13 @@ func (plan bindPlan) createBindInstance(elem reflect.Value, conv TypeConverter) 
 }
 
 type bindInstance struct {
-	query           string
-	args            []interface{}
-	keys            []interface{}
-	existingVersion int64
-	versField       string
-	autoIncrIdx     int
+	query             string
+	args              []interface{}
+	keys              []interface{}
+	existingVersion   int64
+	versField         string
+	autoIncrIdx       int
+	autoIncrFieldName string
 }
 
 func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
@@ -323,6 +290,7 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 				if col.isAutoIncr {
 					s2.WriteString(t.dbmap.Dialect.AutoIncrBindValue())
 					plan.autoIncrIdx = y
+					plan.autoIncrFieldName = col.fieldName
 				} else {
 					s2.WriteString(t.dbmap.Dialect.BindVar(x))
 					if col == t.version {
@@ -563,114 +531,6 @@ func (c *ColumnMap) SetMaxSize(size int) *ColumnMap {
 	return c
 }
 
-// IndexMap represents a mapping between a Go struct field and a single
-// index in a table.
-// Unique and MaxSize only inform the
-// CreateTables() function and are not used by Insert/Update/Delete/Get.
-type IndexMap struct {
-	// Index name in db table
-	IndexName string
-
-	// If true, " unique" is added to create index statements.
-	// Not used elsewhere
-	Unique bool
-
-	// Index type supported by Dialect
-	// Postgres:  B-tree, Hash, GiST and GIN.
-	// Mysql: Btree, Hash.
-	// Sqlite: nil.
-	IndexType string
-
-	// Columns name for single and multiple indexes
-	columns []string
-}
-
-// Rename allows you to specify the index name in the table
-//
-// Example:  table.IndMap("customer_test_idx").Rename("customer_idx")
-//
-func (idx *IndexMap) Rename(indname string) *IndexMap {
-	idx.IndexName = indname
-	return idx
-}
-
-// SetUnique adds "unique" to the create index statements for this
-// index, if b is true.
-func (idx *IndexMap) SetUnique(b bool) *IndexMap {
-	idx.Unique = b
-	return idx
-}
-
-// SetIndexType specifies the index type supported by chousen SQL Dialect
-func (idx *IndexMap) SetIndexType(indtype string) *IndexMap {
-	idx.IndexType = indtype
-	return idx
-}
-
-func (m *DbMap) CreateIndex() error {
-
-	var err error
-	dialect := reflect.TypeOf(m.Dialect)
-	for _, table := range m.tables {
-		for _, index := range table.indexes {
-
-			s := bytes.Buffer{}
-			s.WriteString("create")
-			if index.Unique {
-				s.WriteString(" unique")
-			}
-			s.WriteString(" index")
-			s.WriteString(fmt.Sprintf(" %s on %s", index.IndexName,
-				table.TableName))
-			if dname := dialect.Name(); dname == "PostgresDialect" && index.IndexType != "" {
-				s.WriteString(fmt.Sprintf(" %s %s", m.Dialect.CreateIndexSuffix(), index.IndexType))
-			}
-			s.WriteString(" (")
-			x := 0
-			for _, col := range index.columns {
-				if x > 0 {
-					s.WriteString(", ")
-				}
-				s.WriteString(m.Dialect.QuoteField(col))
-			}
-			s.WriteString(")")
-
-			if dname := dialect.Name(); dname == "MySQLDialect" && index.IndexType != "" {
-				s.WriteString(fmt.Sprintf(" %s %s", m.Dialect.CreateIndexSuffix(), index.IndexType))
-			}
-			s.WriteString(";")
-			_, err = m.Exec(s.String())
-			if err != nil {
-				break
-			}
-		}
-	}
-	return err
-}
-
-func (t *TableMap) DropIndex(name string) error {
-
-	var err error
-	dialect := reflect.TypeOf(t.dbmap.Dialect)
-	for _, idx := range t.indexes {
-		if idx.IndexName == name {
-			s := bytes.Buffer{}
-			s.WriteString(fmt.Sprintf("DROP INDEX %s", idx.IndexName))
-
-			if dname := dialect.Name(); dname == "MySQLDialect" {
-				s.WriteString(fmt.Sprintf(" %s %s", t.dbmap.Dialect.DropIndexSuffix(), t.TableName))
-			}
-			s.WriteString(";")
-			_, e := t.dbmap.Exec(s.String())
-			if e != nil {
-				err = e
-			}
-			break
-		}
-	}
-	return err
-}
-
 // Transaction represents a database transaction.
 // Insert/Update/Delete/Get/Exec operations will be run in the context
 // of that transaction.  Transactions should be terminated with
@@ -701,6 +561,7 @@ type SqlExecutor interface {
 	SelectNullFloat(query string, args ...interface{}) (sql.NullFloat64, error)
 	SelectStr(query string, args ...interface{}) (string, error)
 	SelectNullStr(query string, args ...interface{}) (sql.NullString, error)
+	SelectOne(holder interface{}, query string, args ...interface{}) error
 	query(query string, args ...interface{}) (*sql.Rows, error)
 	queryRow(query string, args ...interface{}) *sql.Row
 }
@@ -871,6 +732,20 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 	return err
 }
 
+// DropTable drops an individual table.  Will throw an error
+// if the table does not exist.
+func (m *DbMap) DropTable(table interface{}) error {
+	t := reflect.TypeOf(table)
+  return m.dropTable(t, false)
+}
+
+// DropTable drops an individual table.  Will NOT throw an error
+// if the table does not exist.
+func (m *DbMap) DropTableIfExists(table interface{}) error {
+	t := reflect.TypeOf(table)
+  return m.dropTable(t, true)
+}
+
 // DropTables iterates through TableMaps registered to this DbMap and
 // executes "drop table" statements against the database for each.
 func (m *DbMap) DropTables() error {
@@ -883,21 +758,34 @@ func (m *DbMap) DropTablesIfExists() error {
 	return m.dropTables(true)
 }
 
-func (m *DbMap) dropTables(addIfExists bool) error {
+// Goes through all the registered tables, dropping them one by one.
+// If an error is encountered, then it is returned and the rest of
+// the tables are not dropped.
+func (m *DbMap) dropTables(addIfExists bool) (err error) {
+	for _, table := range m.tables {
+		err = m.dropTableImpl(table, addIfExists)
+		if err != nil { return }
+	}
+	return err
+}
+
+// Implementation of dropping a single table.
+func (m *DbMap) dropTable(t reflect.Type, addIfExists bool) error {
+  table := tableOrNil(m, t)
+  if table == nil {
+    return errors.New(fmt.Sprintf("table %s was not registered!", table.TableName))
+  }
+
+  return m.dropTableImpl(table, addIfExists)
+}
+
+func (m *DbMap) dropTableImpl(table *TableMap, addIfExists bool) (err error) {
 	ifExists := ""
 	if addIfExists {
 		ifExists = " if exists"
 	}
-
-	var err error
-	for i := range m.tables {
-		table := m.tables[i]
-		_, e := m.Exec(fmt.Sprintf("drop table%s %s;", ifExists, m.Dialect.QuoteField(table.TableName)))
-		if e != nil {
-			err = e
-		}
-	}
-	return err
+  _, err = m.Exec(fmt.Sprintf("drop table%s %s;", ifExists, m.Dialect.QuoteField(table.TableName)))
+  return err
 }
 
 // TruncateTables iterates through TableMaps registered to this DbMap and
@@ -1006,7 +894,7 @@ func (m *DbMap) Exec(query string, args ...interface{}) (sql.Result, error) {
 	m.trace(query, args)
 	//stmt, err := m.Db.Prepare(query)
 	//if err != nil {
-	//  return nil, err
+	//	return nil, err
 	//}
 	//fmt.Println("Exec", query, args)
 	return m.Db.Exec(query, args...)
@@ -1869,14 +1757,14 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 			if err != nil {
 				return err
 			}
-			f := elem.Field(bi.autoIncrIdx)
+			f := elem.FieldByName(bi.autoIncrFieldName)
 			k := f.Kind()
 			if (k == reflect.Int) || (k == reflect.Int16) || (k == reflect.Int32) || (k == reflect.Int64) {
 				f.SetInt(id)
 			} else if (k == reflect.Uint16) || (k == reflect.Uint32) || (k == reflect.Uint64) {
 				f.SetUint(uint64(id))
 			} else {
-				return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d", bi.query, bi.autoIncrIdx)
+				return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d autoIncrFieldName=%s", bi.query, bi.autoIncrIdx, bi.autoIncrFieldName)
 			}
 		} else {
 			_, err := exec.Exec(bi.query, bi.args...)
