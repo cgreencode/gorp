@@ -106,6 +106,13 @@ type Names struct {
 	LastName  string
 }
 
+type UniqueColumns struct {
+	FirstName string
+	LastName  string
+	City      string
+	ZipCode   int64
+}
+
 type testTypeConverter struct{}
 
 func (me testTypeConverter) ToDb(val interface{}) (interface{}, error) {
@@ -268,6 +275,53 @@ func TestUIntPrimaryKey(t *testing.T) {
 	if p3.Id != 1 {
 		t.Errorf("%d != 1", p3.Id)
 	}
+}
+
+func TestSetUniqueTogether(t *testing.T) {
+	dbmap := newDbMap()
+	dbmap.TraceOn("", log.New(os.Stdout, "gorptest: ", log.Lmicroseconds))
+	dbmap.AddTable(UniqueColumns{}).SetUniqueTogether("FirstName", "LastName").SetUniqueTogether("City", "ZipCode")
+	err := dbmap.CreateTablesIfNotExists()
+	if err != nil {
+		panic(err)
+	}
+	defer dropAndClose(dbmap)
+
+	n1 := &UniqueColumns{"Steve", "Jobs", "Cupertino", 95014}
+	err = dbmap.Insert(n1)
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Should fail because of the first constraint
+	n2 := &UniqueColumns{"Steve", "Jobs", "Sunnyvale", 94085}
+	err = dbmap.Insert(n2)
+	if err == nil {
+		t.Error(err)
+	}
+	// "unique" for Postgres/SQLite, "Duplicate entry" for MySQL
+	if !strings.Contains(err.Error(), "unique") && !strings.Contains(err.Error(), "Duplicate entry") {
+		t.Error(err)
+	}
+
+	// Should also fail because of the second unique-together
+	n3 := &UniqueColumns{"Steve", "Wozniak", "Cupertino", 95014}
+	err = dbmap.Insert(n3)
+	if err == nil {
+		t.Error(err)
+	}
+	// "unique" for Postgres/SQLite, "Duplicate entry" for MySQL
+	if !strings.Contains(err.Error(), "unique") && !strings.Contains(err.Error(), "Duplicate entry") {
+		t.Error(err)
+	}
+
+	// This one should finally succeed
+	n4 := &UniqueColumns{"Steve", "Wozniak", "Sunnyvale", 94085}
+	err = dbmap.Insert(n4)
+	if err != nil {
+		t.Error(err)
+	}
+	t.Error(err)
 }
 
 func TestPersistentUser(t *testing.T) {
@@ -1354,30 +1408,6 @@ func TestSelectSingleVal(t *testing.T) {
 	if err == nil {
 		t.Error("Expected nil when two rows found")
 	}
-}
-
-func TestMysqlPanicIfDialectNotInitialized(t *testing.T) {
-	_, driver := dialectAndDriver()
-	// this test only applies to MySQL
-	if os.Getenv("GORP_TEST_DIALECT") != "mysql" {
-		return
-	}
-
-	// The expected behaviour is to catch a panic.
-	// Here is the deferred function which will check if a panic has indeed occurred :
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Error("db.CreateTables() should panic if db is initialized with an incorrect MySQLDialect")
-		}
-	}()
-
-	// invalid MySQLDialect : does not contain Engine or Encoding specification
-	dialect := MySQLDialect{}
-	db := &DbMap{Db: connect(driver), Dialect: dialect}
-	db.AddTableWithName(Invoice{}, "invoice")
-	// the following call should panic :
-	db.CreateTables()
 }
 
 func BenchmarkNativeCrud(b *testing.B) {
