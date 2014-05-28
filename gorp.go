@@ -797,21 +797,18 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 		if strings.TrimSpace(table.SchemaName) != "" {
 			schemaCreate := "create schema"
 			if ifNotExists {
-				s.WriteString(m.Dialect.IfSchemaNotExists(schemaCreate, table.SchemaName))
-			} else {
-				s.WriteString(schemaCreate)
+				schemaCreate += " if not exists"
 			}
-			fmt.Sprintf(" %s;", table.SchemaName)
+
+			s.WriteString(fmt.Sprintf("%s %s;", schemaCreate, table.SchemaName))
 		}
 
-		tableCreate := "create table"
+		create := "create table"
 		if ifNotExists {
-			s.WriteString(m.Dialect.IfTableNotExists(tableCreate, table.SchemaName, table.TableName))
-		} else {
-			s.WriteString(tableCreate)
+			create += " if not exists"
 		}
-		s.WriteString(fmt.Sprintf(" %s (", m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
 
+		s.WriteString(fmt.Sprintf("%s %s (", create, m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
 		x := 0
 		for _, col := range table.Columns {
 			if !col.Transient {
@@ -919,12 +916,12 @@ func (m *DbMap) dropTable(t reflect.Type, addIfExists bool) error {
 	return m.dropTableImpl(table, addIfExists)
 }
 
-func (m *DbMap) dropTableImpl(table *TableMap, ifExists bool) (err error) {
-	tableDrop := "drop table"
-	if ifExists {
-		tableDrop = m.Dialect.IfTableExists(tableDrop, table.SchemaName, table.TableName)
+func (m *DbMap) dropTableImpl(table *TableMap, addIfExists bool) (err error) {
+	ifExists := ""
+	if addIfExists {
+		ifExists = " if exists"
 	}
-	_, err = m.Exec(fmt.Sprintf("%s %s;", tableDrop, m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
+	_, err = m.Exec(fmt.Sprintf("drop table%s %s;", ifExists, m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
 	return err
 }
 
@@ -1656,15 +1653,12 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
 		field, found := t.FieldByNameFunc(func(fieldName string) bool {
-			var mappedFieldName string
 			field, _ := t.FieldByName(fieldName)
-			lowerFieldName := strings.ToLower(field.Name)
-			mappedFieldName = field.Tag.Get("db")
-			if mappedFieldName == "-" && colName != lowerFieldName {
+			fieldName = field.Tag.Get("db")
+
+			if fieldName == "-" {
 				return false
-			} else if mappedFieldName == "-" && colName == lowerFieldName {
-				return true
-			} else if mappedFieldName == "" {
+			} else if fieldName == "" {
 				fieldName = field.Name
 			}
 			if tableMapped {
