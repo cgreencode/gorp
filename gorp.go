@@ -1371,7 +1371,7 @@ func SelectNullStr(e SqlExecutor, query string, args ...interface{}) (sql.NullSt
 // SelectOne executes the given query (which should be a SELECT statement)
 // and binds the result to holder, which must be a pointer.
 //
-// If no row is found, an error (sql.ErrNoRows specifically) will be returned
+// If no row is found, an an error (sql.ErrNoRows specifically) will be returned
 //
 // If more than one row is found, an error will be returned.
 //
@@ -1383,6 +1383,13 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 		return fmt.Errorf("gorp: SelectOne holder must be a pointer, but got: %t", holder)
 	}
 
+	// Handle pointer to pointer
+	isptr := false
+	if t.Kind() == reflect.Ptr {
+		isptr = true
+		t = t.Elem()
+	}
+
 	if t.Kind() == reflect.Struct {
 		list, err := hookedselect(m, e, holder, query, args...)
 		if err != nil {
@@ -1390,11 +1397,19 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 		}
 
 		dest := reflect.ValueOf(holder)
+		if isptr {
+			dest = dest.Elem()
+		}
 
 		if list != nil && len(list) > 0 {
 			// check for multiple rows
 			if len(list) > 1 {
 				return fmt.Errorf("gorp: multiple rows returned for: %s - %v", query, args)
+			}
+
+			// Initialize if nil
+			if dest.IsNil() {
+				dest.Set(reflect.New(t))
 			}
 
 			// only one row found
