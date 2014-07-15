@@ -1383,13 +1383,6 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 		return fmt.Errorf("gorp: SelectOne holder must be a pointer, but got: %t", holder)
 	}
 
-	// Handle pointer to pointer
-	isptr := false
-	if t.Kind() == reflect.Ptr {
-		isptr = true
-		t = t.Elem()
-	}
-
 	if t.Kind() == reflect.Struct {
 		list, err := hookedselect(m, e, holder, query, args...)
 		if err != nil {
@@ -1397,19 +1390,11 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 		}
 
 		dest := reflect.ValueOf(holder)
-		if isptr {
-			dest = dest.Elem()
-		}
 
 		if list != nil && len(list) > 0 {
 			// check for multiple rows
 			if len(list) > 1 {
 				return fmt.Errorf("gorp: multiple rows returned for: %s - %v", query, args)
-			}
-
-			// Initialize if nil
-			if dest.IsNil() {
-				dest.Set(reflect.New(t))
 			}
 
 			// only one row found
@@ -1941,7 +1926,7 @@ func insert(m *DbMap, exec SqlExecutor, list ...interface{}) error {
 				k := f.Kind()
 				if (k == reflect.Int) || (k == reflect.Int16) || (k == reflect.Int32) || (k == reflect.Int64) {
 					f.SetInt(id)
-				} else if (k == reflect.Uint16) || (k == reflect.Uint32) || (k == reflect.Uint64) {
+				} else if (k == reflect.Uint) || (k == reflect.Uint16) || (k == reflect.Uint32) || (k == reflect.Uint64) {
 					f.SetUint(uint64(id))
 				} else {
 					return fmt.Errorf("gorp: Cannot set autoincrement value on non-Int field. SQL=%s  autoIncrIdx=%d autoIncrFieldName=%s", bi.query, bi.autoIncrIdx, bi.autoIncrFieldName)
