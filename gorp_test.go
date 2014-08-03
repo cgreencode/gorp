@@ -89,10 +89,6 @@ type Person struct {
 	Version int64
 }
 
-type FNameOnly struct {
-	FName string
-}
-
 type InvoicePersonView struct {
 	InvoiceId     int64
 	PersonId      int64
@@ -1448,56 +1444,6 @@ func TestQuoteTableNames(t *testing.T) {
 	logBuffer.Reset()
 }
 
-func TestSelectTooManyCols(t *testing.T) {
-	dbmap := initDbMap()
-	defer dropAndClose(dbmap)
-
-	p1 := &Person{0, 0, 0, "bob", "smith", 0}
-	p2 := &Person{0, 0, 0, "jane", "doe", 0}
-	_insert(dbmap, p1)
-	_insert(dbmap, p2)
-
-	obj := _get(dbmap, Person{}, p1.Id)
-	p1 = obj.(*Person)
-	obj = _get(dbmap, Person{}, p2.Id)
-	p2 = obj.(*Person)
-
-	params := map[string]interface{}{
-		"Id": p1.Id,
-	}
-
-	var p3 FNameOnly
-	err := dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
-	if err != nil {
-		if !NonFatalError(err) {
-			t.Error(err)
-		}
-	} else {
-		t.Errorf("Non-fatal error expected")
-	}
-
-	if p1.FName != p3.FName {
-		t.Errorf("%v != %v", p1.FName, p3.FName)
-	}
-
-	var pSlice []FNameOnly
-	_, err = dbmap.Select(&pSlice, "select * from person_test order by fname asc")
-	if err != nil {
-		if !NonFatalError(err) {
-			t.Error(err)
-		}
-	} else {
-		t.Errorf("Non-fatal error expected")
-	}
-
-	if p1.FName != pSlice[0].FName {
-		t.Errorf("%v != %v", p1.FName, pSlice[0].FName)
-	}
-	if p2.FName != pSlice[1].FName {
-		t.Errorf("%v != %v", p2.FName, pSlice[1].FName)
-	}
-}
-
 func TestSelectSingleVal(t *testing.T) {
 	dbmap := initDbMap()
 	defer dropAndClose(dbmap)
@@ -1658,6 +1604,61 @@ func TestSingleColumnKeyDbReturnsZeroRowsUpdatedOnPKChange(t *testing.T) {
 		t.Errorf("Expected 0 updated rows, got %d", count)
 	}
 
+}
+
+func TestPrepare(t *testing.T) {
+	dbmap := initDbMap()
+	defer dropAndClose(dbmap)
+
+	inv1 := &Invoice{0, 100, 200, "prepare-foo", 0, false}
+	inv2 := &Invoice{0, 100, 200, "prepare-bar", 0, false}
+	_insert(dbmap, inv1, inv2)
+
+	bindVar0 := dbmap.Dialect.BindVar(0)
+	bindVar1 := dbmap.Dialect.BindVar(1)
+	stmt, err := dbmap.Prepare(fmt.Sprintf("UPDATE invoice_test SET Memo=%s WHERE Id=%s", bindVar0, bindVar1))
+	if err != nil {
+		t.Error(err)
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec("prepare-baz", inv1.Id)
+	if err != nil {
+		t.Error(err)
+	}
+	err = dbmap.SelectOne(inv1, "SELECT * from invoice_test WHERE Memo='prepare-baz'")
+	if err != nil {
+		t.Error(err)
+	}
+
+	trans, err := dbmap.Begin()
+	if err != nil {
+		t.Error(err)
+	}
+	transStmt, err := trans.Prepare(fmt.Sprintf("UPDATE invoice_test SET IsPaid=%s WHERE Id=%s", bindVar0, bindVar1))
+	if err != nil {
+		t.Error(err)
+	}
+	defer transStmt.Close()
+	_, err = transStmt.Exec(true, inv2.Id)
+	if err != nil {
+		t.Error(err)
+	}
+	err = dbmap.SelectOne(inv2, "SELECT * from invoice_test WHERE IsPaid=true")
+	if err == nil || err != sql.ErrNoRows {
+		t.Error("SelectOne should have returned an sql.ErrNoRows")
+	}
+	err = trans.SelectOne(inv2, "SELECT * from invoice_test WHERE IsPaid=true")
+	if err != nil {
+		t.Error(err)
+	}
+	err = trans.Commit()
+	if err != nil {
+		t.Error(err)
+	}
+	err = dbmap.SelectOne(inv2, "SELECT * from invoice_test WHERE IsPaid=true")
+	if err != nil {
+		t.Error(err)
+	}
 }
 
 func BenchmarkNativeCrud(b *testing.B) {

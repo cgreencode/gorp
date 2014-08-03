@@ -1095,6 +1095,14 @@ func (m *DbMap) TableFor(t reflect.Type, checkPK bool) (*TableMap, error) {
 	return table, nil
 }
 
+// Prepare creates a prepared statement for later queries or executions.
+// Multiple queries or executions may be run concurrently from the returned statement.
+// This is equivalent to running:  Prepare() using database/sql
+func (m *DbMap) Prepare(query string) (*sql.Stmt, error) {
+	m.trace(query, nil)
+	return m.Db.Prepare(query)
+}
+
 func tableOrNil(m *DbMap, t reflect.Type) *TableMap {
 	for i := range m.tables {
 		table := m.tables[i]
@@ -1283,6 +1291,12 @@ func (t *Transaction) ReleaseSavepoint(savepoint string) error {
 	return err
 }
 
+// Prepare has the same behavior as DbMap.Prepare(), but runs in a transaction.
+func (t *Transaction) Prepare(query string) (*sql.Stmt, error) {
+	t.dbmap.trace(query, nil)
+	return t.tx.Prepare(query)
+}
+
 func (t *Transaction) queryRow(query string, args ...interface{}) *sql.Row {
 	t.dbmap.trace(query, args...)
 	return t.tx.QueryRow(query, args...)
@@ -1384,14 +1398,9 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 	}
 
 	if t.Kind() == reflect.Struct {
-		var nonFatalErr error
-
 		list, err := hookedselect(m, e, holder, query, args...)
 		if err != nil {
-			if !NonFatalError(err) {
-				return err
-			}
-			nonFatalErr = err
+			return err
 		}
 
 		dest := reflect.ValueOf(holder)
@@ -1410,7 +1419,7 @@ func SelectOne(m *DbMap, e SqlExecutor, holder interface{}, query string, args .
 			return sql.ErrNoRows
 		}
 
-		return nonFatalErr
+		return nil
 	}
 
 	return selectVal(e, holder, query, args...)
@@ -1443,14 +1452,9 @@ func selectVal(e SqlExecutor, holder interface{}, query string, args ...interfac
 func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	args ...interface{}) ([]interface{}, error) {
 
-	var nonFatalErr error
-
 	list, err := rawselect(m, exec, i, query, args...)
 	if err != nil {
-		if !NonFatalError(err) {
-			return nil, err
-		}
-		nonFatalErr = err
+		return nil, err
 	}
 
 	// Determine where the results are: written to i, or returned in list
@@ -1474,7 +1478,7 @@ func hookedselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 			}
 		}
 	}
-	return list, nonFatalErr
+	return list, nil
 }
 
 func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
@@ -1484,8 +1488,6 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		intoStruct      = true  // Selecting into a struct?
 		pointerElements = true  // Are the slice elements pointers (vs values)?
 	)
-
-	var nonFatalErr error
 
 	// get type for i, verifying it's a supported destination
 	t, err := toType(i)
@@ -1532,10 +1534,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 	var colToFieldIndex [][]int
 	if intoStruct {
 		if colToFieldIndex, err = columnToFieldIndex(m, t, cols); err != nil {
-			if !NonFatalError(err) {
-				return nil, err
-			}
-			nonFatalErr = err
+			return nil, err
 		}
 	}
 
@@ -1564,15 +1563,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		for x := range cols {
 			f := v.Elem()
 			if intoStruct {
-				index := colToFieldIndex[x]
-				if index == nil {
-					// this field is not present in the struct, so create a dummy
-					// value for rows.Scan to scan into
-					var dummy sql.RawBytes
-					dest[x] = &dummy
-					continue
-				}
-				f = f.FieldByIndex(index)
+				f = f.FieldByIndex(colToFieldIndex[x])
 			}
 			target := f.Addr().Interface()
 			if conv != nil {
@@ -1611,7 +1602,7 @@ func rawselect(m *DbMap, exec SqlExecutor, i interface{}, query string,
 		sliceValue.Set(reflect.MakeSlice(sliceValue.Type(), 0, 0))
 	}
 
-	return list, nonFatalErr
+	return list, nil
 }
 
 // maybeExpandNamedQuery checks the given arg to see if it's eligible to be used
@@ -1673,7 +1664,6 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 	// Loop over column names and find field in i to bind to
 	// based on column name. all returned columns must match
 	// a field in the i struct
-	missingColNames := []string{}
 	for x := range cols {
 		colName := strings.ToLower(cols[x])
 		field, found := t.FieldByNameFunc(func(fieldName string) bool {
@@ -1697,13 +1687,7 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 			colToFieldIndex[x] = field.Index
 		}
 		if colToFieldIndex[x] == nil {
-			missingColNames = append(missingColNames, colName)
-		}
-	}
-	if len(missingColNames) > 0 {
-		return colToFieldIndex, &NoFieldInTypeError{
-			TypeName:        t.Name(),
-			MissingColNames: missingColNames,
+			return nil, fmt.Errorf("gorp: No field %s in type %s", colName, t.Name())
 		}
 	}
 	return colToFieldIndex, nil
