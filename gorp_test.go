@@ -11,12 +11,25 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	_ "github.com/ziutek/mymysql/godrv"
 	"log"
+	"math/rand"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+// verify interface compliance
+var _ Dialect = SqliteDialect{}
+var _ Dialect = PostgresDialect{}
+var _ Dialect = MySQLDialect{}
+var _ Dialect = SqlServerDialect{}
+var _ Dialect = OracleDialect{}
+
+type testable interface {
+	GetId() int64
+	Rand()
+}
 
 type Invoice struct {
 	Id       int64
@@ -25,6 +38,41 @@ type Invoice struct {
 	Memo     string
 	PersonId int64
 	IsPaid   bool
+}
+
+func (me *Invoice) GetId() int64 { return me.Id }
+func (me *Invoice) Rand() {
+	me.Memo = fmt.Sprintf("random %d", rand.Int63())
+	me.Created = rand.Int63()
+	me.Updated = rand.Int63()
+}
+
+type InvoiceTag struct {
+	Id       int64 `db:"myid"`
+	Created  int64 `db:"myCreated"`
+	Updated  int64 `db:"date_updated"`
+	Memo     string
+	PersonId int64 `db:"person_id"`
+	IsPaid   bool  `db:"is_Paid"`
+}
+
+func (me *InvoiceTag) GetId() int64 { return me.Id }
+func (me *InvoiceTag) Rand() {
+	me.Memo = fmt.Sprintf("random %d", rand.Int63())
+	me.Created = rand.Int63()
+	me.Updated = rand.Int63()
+}
+
+// See: https://github.com/coopernurse/gorp/issues/175
+type AliasTransientField struct {
+	Id     int64  `db:"id"`
+	Bar    int64  `db:"-"`
+	BarStr string `db:"bar"`
+}
+
+func (me *AliasTransientField) GetId() int64 { return me.Id }
+func (me *AliasTransientField) Rand() {
+	me.BarStr = fmt.Sprintf("random %d", rand.Int63())
 }
 
 type OverriddenInvoice struct {
@@ -39,6 +87,10 @@ type Person struct {
 	FName   string
 	LName   string
 	Version int64
+}
+
+type FNameOnly struct {
+	FName string
 }
 
 type InvoicePersonView struct {
@@ -64,10 +116,14 @@ type WithIgnoredColumn struct {
 	Created  int64
 }
 
-type IgnoredColumnExported struct {
-	Id       int64
-	External int64 `db:"-"`
-	Created  int64
+type IdCreated struct {
+	Id      int64
+	Created int64
+}
+
+type IdCreatedExternal struct {
+	IdCreated
+	External int64
 }
 
 type WithStringPk struct {
@@ -656,11 +712,9 @@ func TestReturnsNonNilSlice(t *testing.T) {
 }
 
 func TestOverrideVersionCol(t *testing.T) {
-	dbmap := initDbMap()
-	dbmap.DropTables()
+	dbmap := newDbMap()
 	t1 := dbmap.AddTable(InvoicePersonView{}).SetKeys(false, "InvoiceId", "PersonId")
 	err := dbmap.CreateTables()
-
 	if err != nil {
 		panic(err)
 	}
@@ -984,46 +1038,71 @@ func TestCrud(t *testing.T) {
 	defer dropAndClose(dbmap)
 
 	inv := &Invoice{0, 100, 200, "first order", 0, true}
+	testCrudInternal(t, dbmap, inv)
+
+	invtag := &InvoiceTag{0, 300, 400, "some order", 33, false}
+	testCrudInternal(t, dbmap, invtag)
+
+	foo := &AliasTransientField{BarStr: "some bar"}
+	testCrudInternal(t, dbmap, foo)
+}
+
+func testCrudInternal(t *testing.T, dbmap *DbMap, val testable) {
+	table, _, err := dbmap.tableForPointer(val, false)
+	if err != nil {
+		t.Errorf("couldn't call TableFor: val=%v err=%v", val, err)
+	}
+
+	_, err = dbmap.Exec("delete from " + table.TableName)
+	if err != nil {
+		t.Errorf("couldn't delete rows from: val=%v err=%v", val, err)
+	}
 
 	// INSERT row
-	_insert(dbmap, inv)
-	if inv.Id == 0 {
-		t.Errorf("inv.Id was not set on INSERT")
+	_insert(dbmap, val)
+	if val.GetId() == 0 {
+		t.Errorf("val.GetId() was not set on INSERT")
 		return
 	}
 
 	// SELECT row
-	obj := _get(dbmap, Invoice{}, inv.Id)
-	inv2 := obj.(*Invoice)
-	if !reflect.DeepEqual(inv, inv2) {
-		t.Errorf("%v != %v", inv, inv2)
+	val2 := _get(dbmap, val, val.GetId())
+	if !reflect.DeepEqual(val, val2) {
+		t.Errorf("%v != %v", val, val2)
 	}
 
 	// UPDATE row and SELECT
-	inv.Memo = "second order"
-	inv.Created = 999
-	inv.Updated = 11111
-	count := _update(dbmap, inv)
+	val.Rand()
+	count := _update(dbmap, val)
 	if count != 1 {
 		t.Errorf("update 1 != %d", count)
 	}
-	obj = _get(dbmap, Invoice{}, inv.Id)
-	inv2 = obj.(*Invoice)
-	if !reflect.DeepEqual(inv, inv2) {
-		t.Errorf("%v != %v", inv, inv2)
+	val2 = _get(dbmap, val, val.GetId())
+	if !reflect.DeepEqual(val, val2) {
+		t.Errorf("%v != %v", val, val2)
+	}
+
+	// Select *
+	rows, err := dbmap.Select(val, "select * from "+table.TableName)
+	if err != nil {
+		t.Errorf("couldn't select * from %s err=%v", table.TableName, err)
+	} else if len(rows) != 1 {
+		t.Errorf("unexpected row count in %s: %d", table.TableName, len(rows))
+	} else if !reflect.DeepEqual(val, rows[0]) {
+		t.Errorf("select * result: %v != %v", val, rows[0])
 	}
 
 	// DELETE row
-	deleted := _del(dbmap, inv)
+	deleted := _del(dbmap, val)
 	if deleted != 1 {
-		t.Errorf("Did not delete row with Id: %d", inv.Id)
+		t.Errorf("Did not delete row with Id: %d", val.GetId())
 		return
 	}
 
 	// VERIFY deleted
-	obj = _get(dbmap, Invoice{}, inv.Id)
-	if obj != nil {
-		t.Errorf("Found invoice with id: %d after Delete()", inv.Id)
+	val2 = _get(dbmap, val, val.GetId())
+	if val2 != nil {
+		t.Errorf("Found invoice with id: %d after Delete()", val.GetId())
 	}
 }
 
@@ -1431,6 +1510,56 @@ func TestQuoteTableNames(t *testing.T) {
 	logBuffer.Reset()
 }
 
+func TestSelectTooManyCols(t *testing.T) {
+	dbmap := initDbMap()
+	defer dropAndClose(dbmap)
+
+	p1 := &Person{0, 0, 0, "bob", "smith", 0}
+	p2 := &Person{0, 0, 0, "jane", "doe", 0}
+	_insert(dbmap, p1)
+	_insert(dbmap, p2)
+
+	obj := _get(dbmap, Person{}, p1.Id)
+	p1 = obj.(*Person)
+	obj = _get(dbmap, Person{}, p2.Id)
+	p2 = obj.(*Person)
+
+	params := map[string]interface{}{
+		"Id": p1.Id,
+	}
+
+	var p3 FNameOnly
+	err := dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
+	if err != nil {
+		if !NonFatalError(err) {
+			t.Error(err)
+		}
+	} else {
+		t.Errorf("Non-fatal error expected")
+	}
+
+	if p1.FName != p3.FName {
+		t.Errorf("%v != %v", p1.FName, p3.FName)
+	}
+
+	var pSlice []FNameOnly
+	_, err = dbmap.Select(&pSlice, "select * from person_test order by fname asc")
+	if err != nil {
+		if !NonFatalError(err) {
+			t.Error(err)
+		}
+	} else {
+		t.Errorf("Non-fatal error expected")
+	}
+
+	if p1.FName != pSlice[0].FName {
+		t.Errorf("%v != %v", p1.FName, pSlice[0].FName)
+	}
+	if p2.FName != pSlice[1].FName {
+		t.Errorf("%v != %v", p2.FName, pSlice[1].FName)
+	}
+}
+
 func TestSelectSingleVal(t *testing.T) {
 	dbmap := initDbMap()
 	defer dropAndClose(dbmap)
@@ -1471,6 +1600,24 @@ func TestSelectSingleVal(t *testing.T) {
 		t.Error("SelectOne should have returned error for non-pointer holder")
 	}
 
+	// verify SelectOne works with uninitialized pointers
+	var p3 *Person
+	err = dbmap.SelectOne(&p3, "select * from person_test where Id=:Id", params)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if !reflect.DeepEqual(p1, p3) {
+		t.Errorf("%v != %v", p1, p3)
+	}
+
+	// verify that the receiver is still nil if nothing was found
+	var p4 *Person
+	dbmap.SelectOne(&p3, "select * from person_test where 2<1 AND Id=:Id", params)
+	if p4 != nil {
+		t.Error("SelectOne should not have changed a nil receiver when no rows were found")
+	}
+
 	// verify that the error is set to sql.ErrNoRows if not found
 	err = dbmap.SelectOne(&p2, "select * from person_test where Id=:Id", map[string]interface{}{
 		"Id": -2222,
@@ -1503,20 +1650,25 @@ func TestSelectAlias(t *testing.T) {
 	dbmap := initDbMap()
 	defer dropAndClose(dbmap)
 
-	p1 := &IgnoredColumnExported{Id: 1, External: 2, Created: 3}
-	_insert(dbmap, p1)
+	p1 := &IdCreatedExternal{IdCreated: IdCreated{Id: 1, Created: 3}, External: 2}
 
-	var p2 IgnoredColumnExported
+	// Insert using embedded IdCreated, which reflects the structure of the table
+	_insert(dbmap, &p1.IdCreated)
 
-	err := dbmap.SelectOne(&p2, "select * from ignored_column_exported_test where Id=1")
+	// Select into IdCreatedExternal type, which includes some fields not present
+	// in id_created_test
+	var p2 IdCreatedExternal
+	err := dbmap.SelectOne(&p2, "select * from id_created_test where Id=1")
 	if err != nil {
 		t.Error(err)
 	}
 	if p2.Id != 1 || p2.Created != 3 || p2.External != 0 {
-		t.Error("Expected ignorred field defaults to not set")
+		t.Error("Expected ignored field defaults to not set")
 	}
 
-	err = dbmap.SelectOne(&p2, "SELECT *, 1 AS external FROM ignored_column_exported_test")
+	// Prove that we can supply an aliased value in the select, and that it will
+	// automatically map to IdCreatedExternal.External
+	err = dbmap.SelectOne(&p2, "SELECT *, 1 AS external FROM id_created_test")
 	if err != nil {
 		t.Error(err)
 	}
@@ -1526,7 +1678,7 @@ func TestSelectAlias(t *testing.T) {
 
 	var rows *sql.Rows
 	var cols []string
-	rows, err = dbmap.Db.Query("SELECT * FROM ignored_column_exported_test")
+	rows, err = dbmap.Db.Query("SELECT * FROM id_created_test")
 	cols, err = rows.Columns()
 	if err != nil || len(cols) != 2 {
 		t.Error("Expected ignored column not created")
@@ -1586,6 +1738,61 @@ func TestSingleColumnKeyDbReturnsZeroRowsUpdatedOnPKChange(t *testing.T) {
 		t.Errorf("Expected 0 updated rows, got %d", count)
 	}
 
+}
+
+func TestPrepare(t *testing.T) {
+	dbmap := initDbMap()
+	defer dropAndClose(dbmap)
+
+	inv1 := &Invoice{0, 100, 200, "prepare-foo", 0, false}
+	inv2 := &Invoice{0, 100, 200, "prepare-bar", 0, false}
+	_insert(dbmap, inv1, inv2)
+
+	bindVar0 := dbmap.Dialect.BindVar(0)
+	bindVar1 := dbmap.Dialect.BindVar(1)
+	stmt, err := dbmap.Prepare(fmt.Sprintf("UPDATE invoice_test SET Memo=%s WHERE Id=%s", bindVar0, bindVar1))
+	if err != nil {
+		t.Error(err)
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec("prepare-baz", inv1.Id)
+	if err != nil {
+		t.Error(err)
+	}
+	err = dbmap.SelectOne(inv1, "SELECT * from invoice_test WHERE Memo='prepare-baz'")
+	if err != nil {
+		t.Error(err)
+	}
+
+	trans, err := dbmap.Begin()
+	if err != nil {
+		t.Error(err)
+	}
+	transStmt, err := trans.Prepare(fmt.Sprintf("UPDATE invoice_test SET IsPaid=%s WHERE Id=%s", bindVar0, bindVar1))
+	if err != nil {
+		t.Error(err)
+	}
+	defer transStmt.Close()
+	_, err = transStmt.Exec(true, inv2.Id)
+	if err != nil {
+		t.Error(err)
+	}
+	err = dbmap.SelectOne(inv2, fmt.Sprintf("SELECT * from invoice_test WHERE IsPaid=%s", bindVar0), true)
+	if err == nil || err != sql.ErrNoRows {
+		t.Error("SelectOne should have returned an sql.ErrNoRows")
+	}
+	err = trans.SelectOne(inv2, fmt.Sprintf("SELECT * from invoice_test WHERE IsPaid=%s", bindVar0), true)
+	if err != nil {
+		t.Error(err)
+	}
+	err = trans.Commit()
+	if err != nil {
+		t.Error(err)
+	}
+	err = dbmap.SelectOne(inv2, fmt.Sprintf("SELECT * from invoice_test WHERE IsPaid=%s", bindVar0), true)
+	if err != nil {
+		t.Error(err)
+	}
 }
 
 func BenchmarkNativeCrud(b *testing.B) {
@@ -1693,22 +1900,31 @@ func initDbMapBench() *DbMap {
 
 func initDbMap() *DbMap {
 	dbmap := newDbMap()
-	dbmap.TraceOn("", log.New(os.Stdout, "gorptest: ", log.Lmicroseconds))
 	dbmap.AddTableWithName(Invoice{}, "invoice_test").SetKeys(true, "Id")
+	dbmap.AddTableWithName(InvoiceTag{}, "invoice_tag_test").SetKeys(true, "myid")
+	dbmap.AddTableWithName(AliasTransientField{}, "alias_trans_field_test").SetKeys(true, "id")
 	dbmap.AddTableWithName(OverriddenInvoice{}, "invoice_override_test").SetKeys(false, "Id")
 	dbmap.AddTableWithName(Person{}, "person_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithIgnoredColumn{}, "ignored_column_test").SetKeys(true, "Id")
-	dbmap.AddTableWithName(IgnoredColumnExported{}, "ignored_column_exported_test").SetKeys(true, "Id")
+	dbmap.AddTableWithName(IdCreated{}, "id_created_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(TypeConversionExample{}, "type_conv_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedStruct{}, "embedded_struct_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedStructBeforeAutoincrField{}, "embedded_struct_before_autoincr_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithEmbeddedAutoincr{}, "embedded_autoincr_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(WithTime{}, "time_test").SetKeys(true, "Id")
 	dbmap.TypeConverter = testTypeConverter{}
-	err := dbmap.CreateTables()
+	err := dbmap.DropTablesIfExists()
 	if err != nil {
 		panic(err)
 	}
+	err = dbmap.CreateTables()
+	if err != nil {
+		panic(err)
+	}
+
+	// See #146 and TestSelectAlias - this type is mapped to the same
+	// table as IdCreated, but includes an extra field that isn't in the table
+	dbmap.AddTableWithName(IdCreatedExternal{}, "id_created_test").SetKeys(true, "Id")
 
 	return dbmap
 }
@@ -1726,7 +1942,9 @@ func initDbMapNulls() *DbMap {
 
 func newDbMap() *DbMap {
 	dialect, driver := dialectAndDriver()
-	return &DbMap{Db: connect(driver), Dialect: dialect}
+	dbmap := &DbMap{Db: connect(driver), Dialect: dialect}
+	dbmap.TraceOn("", log.New(os.Stdout, "gorptest: ", log.Lmicroseconds))
+	return dbmap
 }
 
 func dropAndClose(dbmap *DbMap) {
