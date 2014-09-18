@@ -1,23 +1,6 @@
 # Go Relational Persistence #
 
-[![build status](https://secure.travis-ci.org/go-gorp/gorp.png)](http://travis-ci.org/go-gorp/gorp)
-
-## Call for Maintainers
-
-Dec 7 2014
-
-I've been slacking on keeping up with issues and PRs.  I know there are 
-many of you out there who have active forks and some good ideas on how to
-push the project forward.  If you'd like to step up and either be added as
-a committer to this repo, or would like to become the new canonical fork
-of the project, please comment on #211 here:
-
-https://github.com/go-gorp/gorp/issues/211
-
-Thank you!
-
-
-----
+[![build status](https://secure.travis-ci.org/coopernurse/gorp.png)](http://travis-ci.org/coopernurse/gorp)
 
 I hesitate to call gorp an ORM.  Go doesn't really have objects, at least 
 not in the classic Smalltalk/Java sense.  There goes the "O".  gorp doesn't 
@@ -50,18 +33,18 @@ not infrastructure.
 ## Installation ##
 
     # install the library:
-    go get github.com/go-gorp/gorp
+    go get github.com/coopernurse/gorp
     
     // use in your .go code:
     import (
-        "github.com/go-gorp/gorp"
+        "github.com/coopernurse/gorp"
     )
 
 ## API Documentation ##
 
 Full godoc output from the latest code in master is available here:
 
-http://godoc.org/github.com/go-gorp/gorp
+http://godoc.org/github.com/coopernurse/gorp
 
 ## Quickstart
 
@@ -70,7 +53,7 @@ package main
 
 import (
     "database/sql"
-    "github.com/go-gorp/gorp"
+    "github.com/coopernurse/gorp"
     _ "github.com/mattn/go-sqlite3"
     "log"
     "time"
