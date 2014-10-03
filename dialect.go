@@ -34,6 +34,12 @@ type Dialect interface {
 	// table attributes
 	CreateTableSuffix() string
 
+	// string to append to "create index" statement
+	CreateIndexSuffix() string
+
+	// string to append to "drop index" statement
+	DropIndexSuffix() string
+
 	// string to truncate tables
 	TruncateClause() string
 
@@ -78,16 +84,6 @@ type TargetedAutoIncrInserter interface {
 	// target.  The target should be a pointer to the primary key
 	// field of the value being inserted.
 	InsertAutoIncrToTarget(exec SqlExecutor, insertSql string, target interface{}, params ...interface{}) error
-}
-
-// TargetQueryInserter is implemented by dialects that can perform
-// assignment of integer primary key type by executing a query
-// like "select sequence.currval from dual".
-type TargetQueryInserter interface {
-	// TargetQueryInserter runs an insert operation and assigns the
-	// automatically generated primary key retrived by the query
-	// extracted from the GeneratedIdQuery field of the id column.
-	InsertQueryToTarget(exec SqlExecutor, insertSql, idSql string, target interface{}, params ...interface{}) error
 }
 
 func standardInsertAutoIncr(exec SqlExecutor, insertSql string, params ...interface{}) (int64, error) {
@@ -157,6 +153,14 @@ func (d SqliteDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 // Returns suffix
 func (d SqliteDialect) CreateTableSuffix() string {
 	return d.suffix
+}
+
+func (d SqliteDialect) CreateIndexSuffix() string {
+	return ""
+}
+
+func (d SqliteDialect) DropIndexSuffix() string {
+	return ""
 }
 
 // With sqlite, there technically isn't a TRUNCATE statement,
@@ -267,6 +271,14 @@ func (d PostgresDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 // Returns suffix
 func (d PostgresDialect) CreateTableSuffix() string {
 	return d.suffix
+}
+
+func (d PostgresDialect) CreateIndexSuffix() string {
+	return "using"
+}
+
+func (d PostgresDialect) DropIndexSuffix() string {
+	return ""
 }
 
 func (d PostgresDialect) TruncateClause() string {
@@ -414,7 +426,15 @@ func (d MySQLDialect) CreateTableSuffix() string {
 	return fmt.Sprintf(" engine=%s charset=%s", d.Engine, d.Encoding)
 }
 
-func (d MySQLDialect) TruncateClause() string {
+func (m MySQLDialect) CreateIndexSuffix() string {
+	return "using"
+}
+
+func (m MySQLDialect) DropIndexSuffix() string {
+	return "on"
+}
+
+func (m MySQLDialect) TruncateClause() string {
 	return "truncate"
 }
 
@@ -580,6 +600,9 @@ func (d SqlServerDialect) IfTableNotExists(command, schema, table string) string
 	return s
 }
 
+func (d SqlServerDialect) CreateIndexSuffix() string { return "" }
+func (d SqlServerDialect) DropIndexSuffix() string   { return "" }
+
 ///////////////////////////////////////////////////////
 // Oracle //
 ///////////
@@ -588,6 +611,10 @@ func (d SqlServerDialect) IfTableNotExists(command, schema, table string) string
 type OracleDialect struct{}
 
 func (d OracleDialect) QuerySuffix() string { return "" }
+
+func (d OracleDialect) CreateIndexSuffix() string { return "using" }
+
+func (d OracleDialect) DropIndexSuffix() string { return "on" }
 
 func (d OracleDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool) string {
 	switch val.Kind() {
@@ -640,11 +667,11 @@ func (d OracleDialect) AutoIncrStr() string {
 }
 
 func (d OracleDialect) AutoIncrBindValue() string {
-	return "NULL"
+	return "default"
 }
 
 func (d OracleDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
-	return ""
+	return " returning " + col.ColumnName
 }
 
 // Returns suffix
@@ -661,27 +688,20 @@ func (d OracleDialect) BindVar(i int) string {
 	return fmt.Sprintf(":%d", i+1)
 }
 
-// After executing the insert uses the ColMap IdQuery to get the generated id
-func (d OracleDialect) InsertQueryToTarget(exec SqlExecutor, insertSql, idSql string, target interface{}, params ...interface{}) error {
-	_, err := exec.Exec(insertSql, params...)
+func (d OracleDialect) InsertAutoIncr(exec SqlExecutor, insertSql string, params ...interface{}) (int64, error) {
+	rows, err := exec.query(insertSql, params...)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	id, err := exec.SelectInt(idSql)
-	if err != nil {
-		return err
+	defer rows.Close()
+
+	if rows.Next() {
+		var id int64
+		err := rows.Scan(&id)
+		return id, err
 	}
-	switch target.(type) {
-	case *int64:
-		*(target.(*int64)) = id
-	case *int32:
-		*(target.(*int32)) = int32(id)
-	case int:
-		*(target.(*int)) = int(id)
-	default:
-		return fmt.Errorf("Id field can be int, int32 or int64")
-	}
-	return nil
+
+	return 0, errors.New("No serial value returned for insert: " + insertSql + " Encountered error: " + rows.Err().Error())
 }
 
 func (d OracleDialect) QuoteField(f string) string {
