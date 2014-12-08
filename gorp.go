@@ -362,18 +362,15 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 						plan.autoIncrIdx = y
 						plan.autoIncrFieldName = col.fieldName
 					} else {
-						if col.DefaultValue == "" {
-							s2.WriteString(t.dbmap.Dialect.BindVar(x))
-							if col == t.version {
-								plan.versField = col.fieldName
-								plan.argFields = append(plan.argFields, versFieldConst)
-							} else {
-								plan.argFields = append(plan.argFields, col.fieldName)
-							}
-							x++
+						s2.WriteString(t.dbmap.Dialect.BindVar(x))
+						if col == t.version {
+							plan.versField = col.fieldName
+							plan.argFields = append(plan.argFields, versFieldConst)
 						} else {
-							s2.WriteString(col.DefaultValue)
+							plan.argFields = append(plan.argFields, col.fieldName)
 						}
+
+						x++
 					}
 					first = false
 				}
@@ -562,8 +559,6 @@ type ColumnMap struct {
 	// Not used elsewhere
 	MaxSize int
 
-	DefaultValue string
-
 	fieldName  string
 	gotype     reflect.Type
 	isPK       bool
@@ -749,9 +744,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 			if columnName == "" {
 				columnName = f.Name
 			}
-
-			fieldDefault := f.Tag.Get("db_default")
-
 			gotype := f.Type
 			if m.TypeConverter != nil {
 				// Make a new pointer to a value of type gotype and
@@ -765,11 +757,10 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				}
 			}
 			cm := &ColumnMap{
-				ColumnName:   columnName,
-				DefaultValue: fieldDefault,
-				Transient:    columnName == "-",
-				fieldName:    f.Name,
-				gotype:       gotype,
+				ColumnName: columnName,
+				Transient:  columnName == "-",
+				fieldName:  f.Name,
+				gotype:     gotype,
 			}
 			// Check for nested fields of the same field name and
 			// override them.
@@ -788,7 +779,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				version = cm
 			}
 		}
-
 	}
 	return
 }
