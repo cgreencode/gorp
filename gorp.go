@@ -21,6 +21,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"log"
+	"os"
 )
 
 // Oracle String (empty string is null)
@@ -715,19 +717,19 @@ func (m *DbMap) AddTableWithNameAndSchema(i interface{}, schema string, name str
 	}
 
 	tmap := &TableMap{gotype: t, TableName: name, SchemaName: schema, dbmap: m}
-	tmap.Columns, tmap.version = m.readStructColumns(t)
+	tmap.Columns = m.readStructColumns(t)
 	m.tables = append(m.tables, tmap)
 
 	return tmap
 }
 
-func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *ColumnMap) {
+func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 	n := t.NumField()
 	for i := 0; i < n; i++ {
 		f := t.Field(i)
 		if f.Anonymous && f.Type.Kind() == reflect.Struct {
 			// Recursively add nested fields in embedded structs.
-			subcols, subversion := m.readStructColumns(f.Type)
+			subcols := m.readStructColumns(f.Type)
 			// Don't append nested fields that have the same field
 			// name as an already-mapped field.
 			for _, subcol := range subcols {
@@ -741,9 +743,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				if shouldAppend {
 					cols = append(cols, subcol)
 				}
-			}
-			if subversion != nil {
-				version = subversion
 			}
 		} else {
 			columnName := f.Tag.Get("db")
@@ -780,9 +779,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 			}
 			if shouldAppend {
 				cols = append(cols, cm)
-			}
-			if cm.fieldName == "Version" {
-				version = cm
 			}
 		}
 	}
@@ -1691,32 +1687,20 @@ func exec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) 
 // parameters by extracting data from the map / struct.
 // If not, returns the input values unchanged.
 func maybeExpandNamedQuery(m *DbMap, query string, args []interface{}) (string, []interface{}) {
-	var (
-		arg    = args[0]
-		argval = reflect.ValueOf(arg)
-	)
-	if argval.Kind() == reflect.Ptr {
-		argval = argval.Elem()
+	arg := reflect.ValueOf(args[0])
+	for arg.Kind() == reflect.Ptr {
+		arg = arg.Elem()
 	}
-
-	if argval.Kind() == reflect.Map && argval.Type().Key().Kind() == reflect.String {
+	switch {
+	case arg.Kind() == reflect.Map && arg.Type().Key().Kind() == reflect.String:
 		return expandNamedQuery(m, query, func(key string) reflect.Value {
-			return argval.MapIndex(reflect.ValueOf(key))
+			return arg.MapIndex(reflect.ValueOf(key))
 		})
+		// #84 - ignore time.Time structs here - there may be a cleaner way to do this
+	case arg.Kind() == reflect.Struct && !(arg.Type().PkgPath() == "time" && arg.Type().Name() == "Time"):
+		return expandNamedQuery(m, query, arg.FieldByName)
 	}
-	if argval.Kind() != reflect.Struct {
-		return query, args
-	}
-	if _, ok := arg.(time.Time); ok {
-		// time.Time is driver.Value
-		return query, args
-	}
-	if _, ok := arg.(driver.Valuer); ok {
-		// driver.Valuer will be converted to driver.Value.
-		return query, args
-	}
-
-	return expandNamedQuery(m, query, argval.FieldByName)
+	return query, args
 }
 
 var keyRegexp = regexp.MustCompile(`:[[:word:]]+`)
