@@ -715,24 +715,19 @@ func (m *DbMap) AddTableWithNameAndSchema(i interface{}, schema string, name str
 	}
 
 	tmap := &TableMap{gotype: t, TableName: name, SchemaName: schema, dbmap: m}
-	var primaryKey []*ColumnMap = nil
-	tmap.Columns, tmap.version, primaryKey = m.readStructColumns(t)
+	tmap.Columns = m.readStructColumns(t)
 	m.tables = append(m.tables, tmap)
-	if len(primaryKey) > 0 {
-		tmap.keys = append(tmap.keys, primaryKey...)
-	}
 
 	return tmap
 }
 
-func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *ColumnMap, primaryKey []*ColumnMap) {
-	primaryKey = make([]*ColumnMap, 0)
+func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 	n := t.NumField()
 	for i := 0; i < n; i++ {
 		f := t.Field(i)
 		if f.Anonymous && f.Type.Kind() == reflect.Struct {
 			// Recursively add nested fields in embedded structs.
-			subcols, subversion, subpk := m.readStructColumns(f.Type)
+			subcols := m.readStructColumns(f.Type)
 			// Don't append nested fields that have the same field
 			// name as an already-mapped field.
 			for _, subcol := range subcols {
@@ -747,33 +742,8 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 					cols = append(cols, subcol)
 				}
 			}
-			if subpk != nil {
-				primaryKey = append(primaryKey, subpk...)
-			}
-			if subversion != nil {
-				version = subversion
-			}
 		} else {
-
-			columnName := ""
-			isAuto := false
-			isPK := false
-			sfl := f.Tag.Get("db")
-			if sfl != "" {
-				fl := strings.Split(sfl, ",")
-				for _, v := range fl {
-					v_trim := strings.TrimSpace(v)
-					fkey := strings.ToLower(v_trim)
-					switch fkey {
-					case "primarykey":
-						isPK = true
-					case "autoincrement":
-						isAuto = true
-					default:
-						columnName = v_trim
-					}
-				}
-			}
+			columnName := f.Tag.Get("db")
 			if columnName == "" {
 				columnName = f.Name
 			}
@@ -794,11 +764,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 				Transient:  columnName == "-",
 				fieldName:  f.Name,
 				gotype:     gotype,
-				isPK:       isPK,
-				isAutoIncr: isAuto,
-			}
-			if isPK {
-				primaryKey = append(primaryKey, cm)
 			}
 			// Check for nested fields of the same field name and
 			// override them.
@@ -812,9 +777,6 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, version *C
 			}
 			if shouldAppend {
 				cols = append(cols, cm)
-			}
-			if cm.fieldName == "Version" {
-				version = cm
 			}
 		}
 	}
@@ -1723,20 +1685,32 @@ func exec(e SqlExecutor, query string, args ...interface{}) (sql.Result, error) 
 // parameters by extracting data from the map / struct.
 // If not, returns the input values unchanged.
 func maybeExpandNamedQuery(m *DbMap, query string, args []interface{}) (string, []interface{}) {
-	arg := reflect.ValueOf(args[0])
-	for arg.Kind() == reflect.Ptr {
-		arg = arg.Elem()
+	var (
+		arg    = args[0]
+		argval = reflect.ValueOf(arg)
+	)
+	if argval.Kind() == reflect.Ptr {
+		argval = argval.Elem()
 	}
-	switch {
-	case arg.Kind() == reflect.Map && arg.Type().Key().Kind() == reflect.String:
+
+	if argval.Kind() == reflect.Map && argval.Type().Key().Kind() == reflect.String {
 		return expandNamedQuery(m, query, func(key string) reflect.Value {
-			return arg.MapIndex(reflect.ValueOf(key))
+			return argval.MapIndex(reflect.ValueOf(key))
 		})
-		// #84 - ignore time.Time structs here - there may be a cleaner way to do this
-	case arg.Kind() == reflect.Struct && !(arg.Type().PkgPath() == "time" && arg.Type().Name() == "Time"):
-		return expandNamedQuery(m, query, arg.FieldByName)
 	}
-	return query, args
+	if argval.Kind() != reflect.Struct {
+		return query, args
+	}
+	if _, ok := arg.(time.Time); ok {
+		// time.Time is driver.Value
+		return query, args
+	}
+	if _, ok := arg.(driver.Valuer); ok {
+		// driver.Valuer will be converted to driver.Value.
+		return query, args
+	}
+
+	return expandNamedQuery(m, query, argval.FieldByName)
 }
 
 var keyRegexp = regexp.MustCompile(`:[[:word:]]+`)
@@ -1781,23 +1755,7 @@ func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error
 		colName := strings.ToLower(cols[x])
 		field, found := t.FieldByNameFunc(func(fieldName string) bool {
 			field, _ := t.FieldByName(fieldName)
-
 			fieldName = field.Tag.Get("db")
-			if fieldName != "" {
-				fl := strings.Split(fieldName, ",")
-				for _, v := range fl {
-					v_trim := strings.TrimSpace(v)
-					fkey := strings.ToLower(v_trim)
-					switch fkey {
-					case "primarykey":
-						//skip
-					case "autoincrement":
-						//skip
-					default:
-						fieldName = v_trim
-					}
-				}
-			}
 
 			if fieldName == "-" {
 				return false

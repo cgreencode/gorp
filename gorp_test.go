@@ -48,7 +48,7 @@ func (me *Invoice) Rand() {
 }
 
 type InvoiceTag struct {
-	Id       int64 `db:"myid, primarykey, autoincrement"`
+	Id       int64 `db:"myid"`
 	Created  int64 `db:"myCreated"`
 	Updated  int64 `db:"date_updated"`
 	Memo     string
@@ -1929,10 +1929,10 @@ func initDbMapBench() *DbMap {
 func initDbMap() *DbMap {
 	dbmap := newDbMap()
 	dbmap.AddTableWithName(Invoice{}, "invoice_test").SetKeys(true, "Id")
-	dbmap.AddTableWithName(InvoiceTag{}, "invoice_tag_test")    //key is set via primarykey attribute
+	dbmap.AddTableWithName(InvoiceTag{}, "invoice_tag_test").SetKeys(true, "myid")
 	dbmap.AddTableWithName(AliasTransientField{}, "alias_trans_field_test").SetKeys(true, "id")
 	dbmap.AddTableWithName(OverriddenInvoice{}, "invoice_override_test").SetKeys(false, "Id")
-	dbmap.AddTableWithName(Person{}, "person_test").SetKeys(true, "Id")
+	dbmap.AddTableWithName(Person{}, "person_test").SetKeys(true, "Id").SetVersionCol("Version")
 	dbmap.AddTableWithName(WithIgnoredColumn{}, "ignored_column_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(IdCreated{}, "id_created_test").SetKeys(true, "Id")
 	dbmap.AddTableWithName(TypeConversionExample{}, "type_conv_test").SetKeys(true, "Id")
