@@ -446,13 +446,10 @@ func (d MySQLDialect) IfTableNotExists(command, schema, table string) string {
 ////////////////
 
 // Implementation of Dialect for Microsoft SQL Server databases.
-// Use gorp.SqlServerDialect{"2005"} for legacy datatypes.
-// Tested with driver: github.com/denisenkom/go-mssqldb
+// Tested on SQL Server 2008 with driver: github.com/denisenkom/go-mssqldb
 
 type SqlServerDialect struct {
-
-	// If set to "2005" legacy datatypes will be used
-	Version string
+	suffix string
 }
 
 func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bool) string {
@@ -476,9 +473,9 @@ func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bo
 	case reflect.Int64:
 		return "bigint"
 	case reflect.Uint64:
-		return "numeric(20,0)"
+		return "bigint"
 	case reflect.Float32:
-		return "float(24)"
+		return "real"
 	case reflect.Float64:
 		return "float(53)"
 	case reflect.Slice:
@@ -493,22 +490,15 @@ func (d SqlServerDialect) ToSqlType(val reflect.Type, maxsize int, isAutoIncr bo
 	case "NullFloat64":
 		return "float(53)"
 	case "NullBool":
-		return "bit"
-	case "NullTime", "Time":
-		if d.Version == "2005" {
-			return "datetime"
-		}
-		return "datetime2"
+		return "tinyint"
+	case "Time":
+		return "datetime"
 	}
 
 	if maxsize < 1 {
-		if d.Version == "2005" {
-			maxsize = 255
-		} else {
-			return fmt.Sprintf("nvarchar(max)")
-		}
+		maxsize = 255
 	}
-	return fmt.Sprintf("nvarchar(%d)", maxsize)
+	return fmt.Sprintf("varchar(%d)", maxsize)
 }
 
 // Returns auto_increment
@@ -525,10 +515,14 @@ func (d SqlServerDialect) AutoIncrInsertSuffix(col *ColumnMap) string {
 	return ""
 }
 
-func (d SqlServerDialect) CreateTableSuffix() string { return ";" }
+// Returns suffix
+func (d SqlServerDialect) CreateTableSuffix() string {
+
+	return d.suffix
+}
 
 func (d SqlServerDialect) TruncateClause() string {
-	return "truncate table"
+	return "delete from"
 }
 
 // Returns "?"
@@ -541,38 +535,38 @@ func (d SqlServerDialect) InsertAutoIncr(exec SqlExecutor, insertSql string, par
 }
 
 func (d SqlServerDialect) QuoteField(f string) string {
-	return "[" + strings.Replace(f, "]", "]]", -1) + "]"
+	return `"` + f + `"`
 }
 
 func (d SqlServerDialect) QuotedTableForQuery(schema string, table string) string {
 	if strings.TrimSpace(schema) == "" {
-		return d.QuoteField(table)
+		return table
 	}
-	return d.QuoteField(schema) + "." + d.QuoteField(table)
+	return schema + "." + table
 }
 
 func (d SqlServerDialect) QuerySuffix() string { return ";" }
 
 func (d SqlServerDialect) IfSchemaNotExists(command, schema string) string {
-	s := fmt.Sprintf("if schema_id(N'%s') is null %s", schema, command)
+	s := fmt.Sprintf("if not exists (select name from sys.schemas where name = '%s') %s", schema, command)
 	return s
 }
 
 func (d SqlServerDialect) IfTableExists(command, schema, table string) string {
 	var schema_clause string
 	if strings.TrimSpace(schema) != "" {
-		schema_clause = fmt.Sprintf("%s.", d.QuoteField(schema))
+		schema_clause = fmt.Sprintf("table_schema = '%s' and ", schema)
 	}
-	s := fmt.Sprintf("if object_id('%s%s') is not null %s", schema_clause, d.QuoteField(table), command)
+	s := fmt.Sprintf("if exists (select * from information_schema.tables where %stable_name = '%s') %s", schema_clause, table, command)
 	return s
 }
 
 func (d SqlServerDialect) IfTableNotExists(command, schema, table string) string {
 	var schema_clause string
 	if strings.TrimSpace(schema) != "" {
-		schema_clause = fmt.Sprintf("%s.", schema)
+		schema_clause = fmt.Sprintf("table_schema = '%s' and ", schema)
 	}
-	s := fmt.Sprintf("if object_id('%s%s') is null %s", schema_clause, table, command)
+	s := fmt.Sprintf("if not exists (select * from information_schema.tables where %stable_name = '%s') %s", schema_clause, table, command)
 	return s
 }
 

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -577,7 +578,6 @@ type ColumnMap struct {
 
 	// Passed to Dialect.ToSqlType() to assist in informing the
 	// correct column type to map to in CreateTables()
-	// Not used elsewhere
 	MaxSize int
 
 	fieldName  string
@@ -764,7 +764,35 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 				}
 			}
 		} else {
-			columnName := f.Tag.Get("db")
+			var maxSize int
+			var columnName string
+
+			// Split arguments using comma as separator.
+			// Boolean values should default to "true".
+			// The first argument key, if provided without an explicit value,
+			// and if not recognized as a named argument, is used as the field name,
+			// as long as there isn't a "name" argument.
+			cArguments := strings.Split(f.Tag.Get("db"), ",")
+			for i, argString := range strings.Split(cArguments, ",") {
+				arg := strings.SplitN(argString, ":", 2)
+				argK := strings.TrimSpace(arg[0])
+				var argV string
+				if len(arg) > 1 {
+					argV = strings.TrimSpace(arg[1])
+				}
+				switch argK {
+				case "name":
+					columnName = argV
+				case "size":
+					maxSize, _ = strconv.Atoi(argV)
+				default:
+					if i == 0 && argV == "" {
+						columnName = argK
+					} else {
+						//log.Printf("Unrecognized argument key: %v\n", argK)
+					}
+				}
+			}
 			if columnName == "" {
 				columnName = f.Name
 			}
@@ -785,6 +813,7 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 				Transient:  columnName == "-",
 				fieldName:  f.Name,
 				gotype:     gotype,
+				MaxSize:    maxSize,
 			}
 			// Check for nested fields of the same field name and
 			// override them.
