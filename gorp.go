@@ -304,6 +304,83 @@ func (t *TableMap) SetVersionCol(field string) *ColumnMap {
 	return c
 }
 
+// SqlForCreateTable gets a sequence of SQL commands that will create
+// the specified table and any associated schema
+func (t *TableMap) SqlForCreate(ifNotExists bool) string {
+	s := bytes.Buffer{}
+	dialect := t.dbmap.Dialect
+
+	if strings.TrimSpace(t.SchemaName) != "" {
+		schemaCreate := "create schema"
+		if ifNotExists {
+			s.WriteString(dialect.IfSchemaNotExists(schemaCreate, t.SchemaName))
+		} else {
+			s.WriteString(schemaCreate)
+		}
+		s.WriteString(fmt.Sprintf(" %s;", t.SchemaName))
+	}
+
+	tableCreate := "create table"
+	if ifNotExists {
+		s.WriteString(dialect.IfTableNotExists(tableCreate, t.SchemaName, t.TableName))
+	} else {
+		s.WriteString(tableCreate)
+	}
+	s.WriteString(fmt.Sprintf(" %s (", dialect.QuotedTableForQuery(t.SchemaName, t.TableName)))
+
+	x := 0
+	for _, col := range t.Columns {
+		if !col.Transient {
+			if x > 0 {
+				s.WriteString(", ")
+			}
+			stype := dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
+			s.WriteString(fmt.Sprintf("%s %s", dialect.QuoteField(col.ColumnName), stype))
+
+			if col.isPK || col.isNotNull {
+				s.WriteString(" not null")
+			}
+			if col.isPK && len(t.keys) == 1 {
+				s.WriteString(" primary key")
+			}
+			if col.Unique {
+				s.WriteString(" unique")
+			}
+			if col.isAutoIncr {
+				s.WriteString(fmt.Sprintf(" %s", dialect.AutoIncrStr()))
+			}
+
+			x++
+		}
+	}
+	if len(t.keys) > 1 {
+		s.WriteString(", primary key (")
+		for x := range t.keys {
+			if x > 0 {
+				s.WriteString(", ")
+			}
+			s.WriteString(dialect.QuoteField(t.keys[x].ColumnName))
+		}
+		s.WriteString(")")
+	}
+	if len(t.uniqueTogether) > 0 {
+		for _, columns := range t.uniqueTogether {
+			s.WriteString(", unique (")
+			for i, column := range columns {
+				if i > 0 {
+					s.WriteString(", ")
+				}
+				s.WriteString(dialect.QuoteField(column))
+			}
+			s.WriteString(")")
+		}
+	}
+	s.WriteString(") ")
+	s.WriteString(dialect.CreateTableSuffix())
+	s.WriteString(dialect.QuerySuffix())
+	return s.String()
+}
+
 type bindPlan struct {
 	query             string
 	argFields         []string
@@ -392,15 +469,18 @@ func (t *TableMap) bindInsert(elem reflect.Value) (bindInstance, error) {
 						plan.autoIncrIdx = y
 						plan.autoIncrFieldName = col.fieldName
 					} else {
-						s2.WriteString(t.dbmap.Dialect.BindVar(x))
-						if col == t.version {
-							plan.versField = col.fieldName
-							plan.argFields = append(plan.argFields, versFieldConst)
+						if col.DefaultValue == "" {
+							s2.WriteString(t.dbmap.Dialect.BindVar(x))
+							if col == t.version {
+								plan.versField = col.fieldName
+								plan.argFields = append(plan.argFields, versFieldConst)
+							} else {
+								plan.argFields = append(plan.argFields, col.fieldName)
+							}
+							x++
 						} else {
-							plan.argFields = append(plan.argFields, col.fieldName)
+							s2.WriteString(col.DefaultValue)
 						}
-
-						x++
 					}
 					first = false
 				}
@@ -587,6 +667,8 @@ type ColumnMap struct {
 	// Passed to Dialect.ToSqlType() to assist in informing the
 	// correct column type to map to in CreateTables()
 	MaxSize int
+
+	DefaultValue string
 
 	fieldName  string
 	gotype     reflect.Type
@@ -777,18 +859,37 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 			cArguments := strings.Split(f.Tag.Get("db"), ",")
 			columnName := cArguments[0]
 			var maxSize int
+			var defaultValue string
 			for _, argString := range cArguments[1:] {
 				arg := strings.SplitN(argString, ":", 2)
+
+				// check mandatory/unexpected option values
+				switch arg[0] {
+				case "size", "default":
+					// options requiring value
+					if len(arg) == 1 {
+						panic(fmt.Sprintf("missing option value for option %v on field %v", arg[0], f.Name))
+					}
+				default:
+					// options where value is invalid (currently all other options)
+					if len(arg) == 2 {
+						panic(fmt.Sprintf("unexpected option value for option %v on field %v", arg[0], f.Name))
+					}
+				}
+
 				switch arg[0] {
 				case "size":
 					maxSize, _ = strconv.Atoi(arg[1])
+				case "default":
+					defaultValue = arg[1]
 				default:
-					panic(fmt.Sprintf("Unrecognized tag argument for field %v: %v", f.Name, arg))
+					panic(fmt.Sprintf("Unrecognized tag option for field %v: %v", f.Name, arg))
 				}
 			}
 			if columnName == "" {
 				columnName = f.Name
 			}
+
 			gotype := f.Type
 			value := reflect.New(gotype).Interface()
 			if m.TypeConverter != nil {
@@ -813,11 +914,12 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 				}
 			}
 			cm := &ColumnMap{
-				ColumnName: columnName,
-				Transient:  columnName == "-",
-				fieldName:  f.Name,
-				gotype:     gotype,
-				MaxSize:    maxSize,
+				ColumnName:   columnName,
+				DefaultValue: defaultValue,
+				Transient:    columnName == "-",
+				fieldName:    f.Name,
+				gotype:       gotype,
+				MaxSize:      maxSize,
 			}
 			// Check for nested fields of the same field name and
 			// override them.
@@ -833,6 +935,7 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap) {
 				cols = append(cols, cm)
 			}
 		}
+
 	}
 	return
 }
@@ -857,78 +960,8 @@ func (m *DbMap) createTables(ifNotExists bool) error {
 	var err error
 	for i := range m.tables {
 		table := m.tables[i]
-
-		s := bytes.Buffer{}
-
-		if strings.TrimSpace(table.SchemaName) != "" {
-			schemaCreate := "create schema"
-			if ifNotExists {
-				s.WriteString(m.Dialect.IfSchemaNotExists(schemaCreate, table.SchemaName))
-			} else {
-				s.WriteString(schemaCreate)
-			}
-			s.WriteString(fmt.Sprintf(" %s;", table.SchemaName))
-		}
-
-		tableCreate := "create table"
-		if ifNotExists {
-			s.WriteString(m.Dialect.IfTableNotExists(tableCreate, table.SchemaName, table.TableName))
-		} else {
-			s.WriteString(tableCreate)
-		}
-		s.WriteString(fmt.Sprintf(" %s (", m.Dialect.QuotedTableForQuery(table.SchemaName, table.TableName)))
-
-		x := 0
-		for _, col := range table.Columns {
-			if !col.Transient {
-				if x > 0 {
-					s.WriteString(", ")
-				}
-				stype := m.Dialect.ToSqlType(col.gotype, col.MaxSize, col.isAutoIncr)
-				s.WriteString(fmt.Sprintf("%s %s", m.Dialect.QuoteField(col.ColumnName), stype))
-
-				if col.isPK || col.isNotNull {
-					s.WriteString(" not null")
-				}
-				if col.isPK && len(table.keys) == 1 {
-					s.WriteString(" primary key")
-				}
-				if col.Unique {
-					s.WriteString(" unique")
-				}
-				if col.isAutoIncr {
-					s.WriteString(fmt.Sprintf(" %s", m.Dialect.AutoIncrStr()))
-				}
-
-				x++
-			}
-		}
-		if len(table.keys) > 1 {
-			s.WriteString(", primary key (")
-			for x := range table.keys {
-				if x > 0 {
-					s.WriteString(", ")
-				}
-				s.WriteString(m.Dialect.QuoteField(table.keys[x].ColumnName))
-			}
-			s.WriteString(")")
-		}
-		if len(table.uniqueTogether) > 0 {
-			for _, columns := range table.uniqueTogether {
-				s.WriteString(", unique (")
-				for i, column := range columns {
-					if i > 0 {
-						s.WriteString(", ")
-					}
-					s.WriteString(m.Dialect.QuoteField(column))
-				}
-				s.WriteString(")")
-			}
-		}
-		s.WriteString(") ")
-		s.WriteString(m.Dialect.CreateTableSuffix())
-		s.WriteString(m.Dialect.QuerySuffix())
-		_, err = m.Exec(s.String())
+		sql := table.SqlForCreate(ifNotExists)
+		_, err = m.Exec(sql)
 		if err != nil {
 			break
 		}
