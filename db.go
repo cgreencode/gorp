@@ -226,11 +226,7 @@ func (m *DbMap) readStructColumns(t reflect.Type) (cols []*ColumnMap, primaryKey
 			}
 
 			gotype := f.Type
-			valueType := gotype
-			if valueType.Kind() == reflect.Ptr {
-				valueType = valueType.Elem()
-			}
-			value := reflect.New(valueType).Interface()
+			value := reflect.New(gotype).Interface()
 			if m.TypeConverter != nil {
 				// Make a new pointer to a value of type gotype and
 				// pass it to the TypeConverter's FromDb method to see
