@@ -402,13 +402,11 @@ type InvoicePersonView struct {
 
 // Create some rows
 p1 := &Person{0, 0, 0, "bob", "smith"}
-err = dbmap.Insert(p1)
-checkErr(err, "Insert failed")
+dbmap.Insert(p1)
 
 // notice how we can wire up p1.Id to the invoice easily
 inv1 := &Invoice{0, 0, 0, "xmas order", p1.Id}
-err = dbmap.Insert(inv1)
-checkErr(err, "Insert failed")
+dbmap.Insert(inv1)
 
 // Run your query
 query := "select i.Id InvoiceId, p.Id PersonId, i.Memo, p.FName " +
@@ -471,12 +469,9 @@ func InsertInv(dbmap *DbMap, inv *Invoice, per *Person) error {
         return err
     }
 
-    err = trans.Insert(per)
-    checkErr(err, "Insert failed")
-
+    trans.Insert(per)
     inv.PersonId = per.Id
-    err = trans.Insert(inv)
-    checkErr(err, "Insert failed")
+    trans.Insert(inv)
 
     // if the commit is successful, a nil error is returned
     return trans.Commit()
@@ -558,14 +553,12 @@ type Person struct {
 }
 
 p1 := &Person{0, 0, 0, "Bob", "Smith", 0}
-err = dbmap.Insert(p1)  // Version is now 1
-checkErr(err, "Insert failed")
+dbmap.Insert(p1)  // Version is now 1
 
 obj, err := dbmap.Get(Person{}, p1.Id)
 p2 := obj.(*Person)
 p2.LName = "Edwards"
-_,err = dbmap.Update(p2)  // Version is now 2
-checkErr(err, "Update failed")
+dbmap.Update(p2)  // Version is now 2
 
 p1.LName = "Howard"
 
