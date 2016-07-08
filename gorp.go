@@ -110,16 +110,8 @@ type SqlExecutor interface {
 	SelectStr(query string, args ...interface{}) (string, error)
 	SelectNullStr(query string, args ...interface{}) (sql.NullString, error)
 	SelectOne(holder interface{}, query string, args ...interface{}) error
-	query(query string, args ...interface{}) (*sql.Rows, error)
-	queryRow(query string, args ...interface{}) *sql.Row
-}
-
-// DynamicTable allows the users of gorp to dynamically
-// use different database table names during runtime
-// while sharing the same golang struct for in-memory data
-type DynamicTable interface {
-	TableName() string
-	SetTableName(string)
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
 }
 
 // Compile-time check that DbMap and Transaction implement the SqlExecutor
@@ -228,13 +220,13 @@ func expandNamedQuery(m *DbMap, query string, keyGetter func(key string) reflect
 	}), args
 }
 
-func columnToFieldIndex(m *DbMap, t reflect.Type, name string, cols []string) ([][]int, error) {
+func columnToFieldIndex(m *DbMap, t reflect.Type, cols []string) ([][]int, error) {
 	colToFieldIndex := make([][]int, len(cols))
 
 	// check if type t is a mapped table - if so we'll
 	// check the table for column aliasing below
 	tableMapped := false
-	table := tableOrNil(m, t, name)
+	table := tableOrNil(m, t)
 	if table != nil {
 		tableMapped = true
 	}
@@ -343,17 +335,7 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 		return nil, err
 	}
 
-	var table *TableMap
-	tableName := ""
-	var dyn DynamicTable
-	isDynamic := false
-	if dyn, isDynamic = i.(DynamicTable); isDynamic {
-		tableName = dyn.TableName()
-		table, err = m.TableForDynamic(tableName, true)
-	} else {
-		table, err = m.TableFor(t, true)
-	}
-
+	table, err := m.TableFor(t, true)
 	if err != nil {
 		return nil, err
 	}
@@ -361,11 +343,6 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 	plan := table.bindGet()
 
 	v := reflect.New(t)
-	if true == isDynamic {
-		retDyn := v.Interface().(DynamicTable)
-		retDyn.SetTableName(tableName)
-	}
-
 	dest := make([]interface{}, len(plan.argFields))
 
 	conv := m.TypeConverter
@@ -384,7 +361,7 @@ func get(m *DbMap, exec SqlExecutor, i interface{},
 		dest[x] = target
 	}
 
-	row := exec.queryRow(plan.query, keys...)
+	row := exec.QueryRow(plan.query, keys...)
 	err = row.Scan(dest...)
 	if err != nil {
 		if err == sql.ErrNoRows {
